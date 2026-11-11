@@ -153,29 +153,31 @@ export async function pollEcoDieselFastFrame(
   const pcm = findModuleById('PCM');
   const tcm = findModuleById('TCM');
 
-  const askPcm = (hex: string) => session.requestUds(pcm, hex, 1400);
+  const askFast1 = (hex: string) => session.requestUds(pcm, hex, 1100, 1);
+  const askMulti = (hex: string) => session.requestUds(pcm, hex, 1400);
 
-  const rpmR = await askPcm('010C');
-  const spdR = await askPcm('010D');
-  const boostR = await askPcm('010B');
-  // Query 2-byte Diesel Boost (0170) in Stage 2 mode or whenever 010B nears its 255 kPa ceiling
+  // Fast Dynamic Loop (every tick): RPM, Speed, Boost, Load, Common Rail PSI, Pre-Turbo EGT
+  const rpmR = await askFast1('010C');
+  const spdR = await askFast1('010D');
+  const boostR = await askFast1('010B');
   const boost70R =
     stage2DeleteMode || (boostR.ok && boostR.bytes.length >= 3 && boostR.bytes[2] >= 245)
-      ? await askPcm('0170')
+      ? await askMulti('0170')
       : null;
-  const iatR = await askPcm('010F');
-  const ectR = await askPcm('0105');
-  const oilR = await askPcm('015C');
-  const loadR = await askPcm('0104');
-  const railR = await askPcm('0123');
-  const voltR = await askPcm('0142');
-  const egtR = await askPcm('0178');
-  // Skip deleted aftertreatment PIDs in Stage 2 Delete mode for ~30% faster gauge refresh
-  const dpfP = stage2DeleteMode ? null : await askPcm('017A');
-  const regR = stage2DeleteMode ? null : await askPcm('018B');
+  const loadR = await askFast1('0104');
+  const railR = await askFast1('0123');
+  const egtR = await askMulti('0178');
 
-  let batteryVolts = voltR.ok ? decodeMode01Voltage(voltR.bytes) : null;
-  if (batteryVolts === null) {
+  // Thermal & Electrical Inertia Loop (polled on slow cadence for ~3.5x faster needle FPS over BLE!)
+  const iatR = includeSlowDids ? await askFast1('010F') : null;
+  const ectR = includeSlowDids ? await askFast1('0105') : null;
+  const oilR = includeSlowDids ? await askFast1('015C') : null;
+  const voltR = includeSlowDids ? await askFast1('0142') : null;
+  const dpfP = !stage2DeleteMode && includeSlowDids ? await askMulti('017A') : null;
+  const regR = !stage2DeleteMode && includeSlowDids ? await askMulti('018B') : null;
+
+  let batteryVolts = voltR?.ok ? decodeMode01Voltage(voltR.bytes) : null;
+  if (batteryVolts === null && includeSlowDids) {
     batteryVolts = await session.readPin16Voltage();
   }
 
@@ -186,16 +188,16 @@ export async function pollEcoDieselFastFrame(
 
   if (includeSlowDids) {
     if (!stage2DeleteMode) {
-      const sootR = await askPcm('221E30');
+      const sootR = await askMulti('221E30');
       if (sootR.ok) dpfSootPct = decodeStellantisDpfSootPct(sootR.bytes);
     }
 
     let tftR = await session.requestUds(tcm, '221E1C', 1300);
-    if (!tftR.ok) tftR = await askPcm('221E1C');
+    if (!tftR.ok) tftR = await askMulti('221E1C');
     if (tftR.ok) transFluidF = decodeStellantisTransTempF(tftR.bytes);
 
     // Odometer cascade: SAE 01A6 -> IPC 22010C -> ECM 22043B (labeled transparently)
-    const odoA6 = await askPcm('01A6');
+    const odoA6 = await askMulti('01A6');
     if (odoA6.ok && odoA6.bytes.length >= 6 && odoA6.bytes[0] === 0x41 && odoA6.bytes[1] === 0xa6) {
       const rawKm10 =
         ((odoA6.bytes[2] << 24) >>> 0) +
@@ -205,7 +207,7 @@ export async function pollEcoDieselFastFrame(
       odometerMi = Math.round(rawKm10 * 0.1 * 0.621371 * 10) / 10;
       odometerSource = 'SAE 01A6';
     } else {
-      const odo043B = await askPcm('22043B');
+      const odo043B = await askMulti('22043B');
       if (odo043B.ok && odo043B.bytes.length >= 5) {
         const raw = (odo043B.bytes[3] << 8) | odo043B.bytes[4];
         odometerMi = Math.round(raw * 8.192 * 10) / 10;
@@ -226,9 +228,9 @@ export async function pollEcoDieselFastFrame(
     rpm: rpmR.ok ? decodeMode01Rpm(rpmR.bytes) : null,
     speedMph: spdR.ok ? decodeMode01SpeedMph(spdR.bytes) : null,
     boostPsi: highBoost ?? stdBoost,
-    intakeTempF: iatR.ok ? decodeMode01TempF(iatR.bytes, 0x0f) : null,
-    coolantF: ectR.ok ? decodeMode01TempF(ectR.bytes, 0x05) : null,
-    oilTempF: oilR.ok ? decodeMode01TempF(oilR.bytes, 0x5c) : null,
+    intakeTempF: iatR?.ok ? decodeMode01TempF(iatR.bytes, 0x0f) : null,
+    coolantF: ectR?.ok ? decodeMode01TempF(ectR.bytes, 0x05) : null,
+    oilTempF: oilR?.ok ? decodeMode01TempF(oilR.bytes, 0x5c) : null,
     transFluidF,
     egt1PreTurboF: egts.egt1,
     egt2DocOutF: egts.egt2,

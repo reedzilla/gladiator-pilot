@@ -316,16 +316,20 @@ export class ElmSession {
   }
 
   /**
-   * Send a UDS request (hex string e.g. `"22 F1 90"` or `"10 03"`) to `ecu` and assemble ISO-TP reply.
+   * Send a UDS / Mode 01 request (hex string e.g. `"22 F1 90"` or `"01 0C"`) to `ecu` and assemble ISO-TP reply.
+   * Pass `expectedSingleFrameCount = 1` ONLY on guaranteed 1-frame Mode 01 PIDs so ELM327/STN returns immediately
+   * after the first CAN frame instead of waiting `ATST` (~200 ms) for additional responders!
    */
   public async requestUds(
     ecu: EcuEndpoint,
     hexPayload: string,
-    timeoutMs = 2500
+    timeoutMs = 2500,
+    expectedSingleFrameCount?: 1
   ): Promise<UdsResponse> {
     await this.targetEndpoint(ecu);
     const cleanHex = hexPayload.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
-    const raw = await this.sendCommand(cleanHex, timeoutMs);
+    const wireCmd = expectedSingleFrameCount === 1 ? `${cleanHex} 1` : cleanHex;
+    const raw = await this.sendCommand(wireCmd, timeoutMs);
     return assembleIsoTpResponse(raw, {
       expectedRxId: ecu.rxId.toUpperCase(),
       expectedBits: ecu.bits,

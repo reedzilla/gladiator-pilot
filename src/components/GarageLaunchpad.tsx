@@ -32,8 +32,9 @@ export const GarageLaunchpad: React.FC = () => {
               Select How You Want to Connect
             </h2>
             <p className="max-w-xl text-sm text-slate-400">
-              Live EcoDiesel gauges, DPF soot/regen tracking, fault scans, and factory backups work
-              today on your stock OBD port. Plug in your 12+8 cable to unlock full Truck Mods &amp; Trail Box.
+              High-speed Stage 2 EcoDiesel pyrometer &amp; boost gauges, Pitch &amp; Roll inclinometer,
+              CSV pull logger, fault scans, and factory backups work today on your stock OBD port.
+              Add a 12+8 cable to unlock full Truck Mods &amp; Trail Box switches.
             </p>
           </div>
 

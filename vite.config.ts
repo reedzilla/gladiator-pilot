@@ -10,6 +10,17 @@ export default defineConfig(({ mode }) => ({
     tailwindcss(),
     ...(mode === 'https' ? [basicSsl()] : []),
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-dexie': ['dexie'],
+          'vendor-icons': ['lucide-react'],
+        },
+      },
+    },
+  },
   server: {
     port: 5180,
     host: true,

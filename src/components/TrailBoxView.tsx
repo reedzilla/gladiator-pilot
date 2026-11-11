@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
-import { Plus, Power, Trash2, Zap } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { Gauge, Plus, Power, RefreshCw, Trash2, Zap } from 'lucide-react';
 import { useGladiator } from '../context/GladiatorContext';
 import { findModuleById, GLADIATOR_MODULES } from '../lib/gladiator/moduleCatalog';
+import { playAlertChime } from '../lib/gladiator/telemetryLogger';
 import { SavedUdsMacro, vaultDb } from '../lib/storage/vaultDb';
 import { EcuEndpoint } from '../lib/transport/types';
 import { OfflineLinkBanner } from './OfflineLinkBanner';
@@ -39,6 +40,51 @@ const DEMO_SWITCHES: SavedUdsMacro[] = [
   {
     id: -3,
     createdAt: 0,
+    name: '4-Low Cooling Fan 100% Override',
+    category: 'live_2f',
+    bus: 'CAN_C',
+    bits: 11,
+    txId: '620',
+    rxId: '504',
+    scheme: 'fca_asymmetric',
+    stepsHex: ['10 03', '2F D1 28 03 FF'],
+    releaseStepsHex: ['2F D1 28 00'],
+    provenance: 'sim_demo',
+    notes: 'Pre-cools radiator & intercooler during slow summer rock crawls',
+  },
+  {
+    id: -4,
+    createdAt: 0,
+    name: 'Winch / Alternator Field Boost',
+    category: 'live_2f',
+    bus: 'CAN_C',
+    bits: 11,
+    txId: '620',
+    rxId: '504',
+    scheme: 'fca_asymmetric',
+    stepsHex: ['10 03', '2F D1 32 03 01'],
+    releaseStepsHex: ['2F D1 32 00'],
+    provenance: 'sim_demo',
+    notes: 'Commands smart-charging voltage target up to 14.4V before heavy winch pulls',
+  },
+  {
+    id: -5,
+    createdAt: 0,
+    name: 'Stealth Dark-Camp Blackout',
+    category: 'live_2f',
+    bus: 'CAN_C',
+    bits: 11,
+    txId: '620',
+    rxId: '504',
+    scheme: 'fca_asymmetric',
+    stepsHex: ['10 03', '2F D1 22 03 00'],
+    releaseStepsHex: ['2F D1 22 00'],
+    provenance: 'sim_demo',
+    notes: 'Suppresses exterior courtesy/halo flash at dark overland campsites',
+  },
+  {
+    id: -6,
+    createdAt: 0,
     name: 'ABS Brake Hold / Bleed Prep',
     category: 'routine_31',
     bus: 'CAN_C',
@@ -52,6 +98,13 @@ const DEMO_SWITCHES: SavedUdsMacro[] = [
   },
 ];
 
+interface FourCornerPsi {
+  fl: number;
+  fr: number;
+  rl: number;
+  rr: number;
+}
+
 export const TrailBoxView: React.FC = () => {
   const { session, simTransport, sgwState, macros, refreshVault, snifferRunning } =
     useGladiator();
@@ -61,15 +114,66 @@ export const TrailBoxView: React.FC = () => {
   const [statusBanner, setStatusBanner] = useState<string | null>(null);
   const [showBuilder, setShowBuilder] = useState(false);
 
+  // Trailhead 4-Corner Air-Down / Air-Up Live Assistant
+  const [targetPsi, setTargetPsi] = useState<number>(18);
+  const [liveTires, setLiveTires] = useState<FourCornerPsi>({ fl: 37, fr: 37, rl: 36, rr: 37 });
+  const [pollingTires, setPollingTires] = useState<boolean>(false);
+
   const [newName, setNewName] = useState('');
   const [newEcuId, setNewEcuId] = useState('BCM_C');
   const [newSteps, setNewSteps] = useState('10 03\n2F D1 20 03 01');
   const [newRelease, setNewRelease] = useState('2F D1 20 00');
 
-  // Show built-in demo switches when offline or running Simulator so pod is never empty
+  const sampleTirePressures = async () => {
+    if (!session || snifferRunning) return;
+    const bcm = findModuleById('BCM_C');
+    const r = await session.requestUds(bcm, '22D112', 1400);
+    if (r.ok && r.bytes.length >= 7 && r.bytes[0] === 0x62) {
+      const next: FourCornerPsi = {
+        fl: r.bytes[3],
+        fr: r.bytes[4],
+        rl: r.bytes[5],
+        rr: r.bytes[6],
+      };
+      setLiveTires((prev) => {
+        const hitTarget = (oldV: number, newV: number) =>
+          Math.abs(oldV - targetPsi) > 1 && Math.abs(newV - targetPsi) <= 1;
+        if (
+          hitTarget(prev.fl, next.fl) ||
+          hitTarget(prev.fr, next.fr) ||
+          hitTarget(prev.rl, next.rl) ||
+          hitTarget(prev.rr, next.rr)
+        ) {
+          playAlertChime(false);
+        }
+        return next;
+      });
+    }
+  };
+
+  useEffect(() => {
+    if (!pollingTires || !session || snifferRunning) return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const loop = async () => {
+      if (!active) return;
+      await sampleTirePressures().catch(() => undefined);
+      if (active) timer = setTimeout(loop, 1200);
+    };
+    loop();
+    return () => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pollingTires, session, snifferRunning, targetPsi]);
+
+  // Show built-in overland switches when offline or running Simulator (plus any user macros)
   const allSwitches: SavedUdsMacro[] = !session || simTransport
     ? [...DEMO_SWITCHES, ...macros]
-    : macros;
+    : macros.length > 0
+      ? macros
+      : DEMO_SWITCHES;
 
   const canTransmit = Boolean(session) && sgwState === 'bypass_active' && !snifferRunning;
 
@@ -165,6 +269,13 @@ export const TrailBoxView: React.FC = () => {
     await refreshVault();
   };
 
+  const corners: Array<{ key: keyof FourCornerPsi; label: string }> = [
+    { key: 'fl', label: 'Front Left' },
+    { key: 'fr', label: 'Front Right' },
+    { key: 'rl', label: 'Rear Left' },
+    { key: 'rr', label: 'Rear Right' },
+  ];
+
   return (
     <div className="space-y-5">
       <OfflineLinkBanner />
@@ -175,7 +286,7 @@ export const TrailBoxView: React.FC = () => {
           <Zap className="h-5 w-5 text-orange-400" />
           <div>
             <h2 className="text-base font-bold text-slate-100">
-              Trail Box — Auxiliary Switch Pod
+              Trail Box — Overland Switch Pod &amp; Air-Down Assistant
             </h2>
             <p className="text-xs text-slate-400">
               {canTransmit
@@ -192,6 +303,96 @@ export const TrailBoxView: React.FC = () => {
           <Plus className="h-4 w-4" />
           Add Custom Switch
         </button>
+      </div>
+
+      {/* Trailhead 4-Corner Tire Fill / Air-Down Assistant */}
+      <div className="uconnect-card rounded-2xl border border-slate-800/90 p-5 space-y-4">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2">
+            <Gauge className="h-4 w-4 text-orange-400" />
+            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+              Trailhead 4-Corner Air-Down / Air-Up Assistant
+            </h3>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-1.5">
+            {[
+              { label: 'Crawl 15', psi: 15 },
+              { label: 'Trail 18', psi: 18 },
+              { label: 'Sand 22', psi: 22 },
+              { label: 'Street 37', psi: 37 },
+            ].map((p) => (
+              <button
+                key={p.psi}
+                onClick={() => setTargetPsi(p.psi)}
+                className={`min-h-[34px] rounded-lg border px-2.5 py-1 font-mono text-[11px] font-bold transition ${
+                  targetPsi === p.psi
+                    ? 'border-orange-500 bg-orange-500/20 text-orange-200'
+                    : 'border-slate-800 bg-slate-900 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {p.label}
+              </button>
+            ))}
+
+            <button
+              onClick={() => setPollingTires((p) => !p)}
+              disabled={!session || snifferRunning}
+              className={`ml-1 inline-flex min-h-[34px] items-center gap-1.5 rounded-lg border px-3 py-1 font-mono text-[11px] font-bold transition disabled:opacity-40 ${
+                pollingTires
+                  ? 'border-emerald-500/60 bg-emerald-500/20 text-emerald-200'
+                  : 'border-slate-700 bg-slate-800 text-slate-200 hover:bg-slate-700'
+              }`}
+            >
+              <RefreshCw className={`h-3 w-3 ${pollingTires ? 'animate-spin' : ''}`} />
+              {pollingTires ? 'Live TPMS ON' : 'Poll Live TPMS'}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+          {corners.map(({ key, label }) => {
+            const val = liveTires[key];
+            const diff = val - targetPsi;
+            const onTarget = Math.abs(diff) <= 1;
+            return (
+              <div
+                key={key}
+                className={`rounded-xl border p-3.5 transition ${
+                  onTarget
+                    ? 'border-emerald-500/50 bg-emerald-950/25'
+                    : 'border-slate-800 bg-slate-950/70'
+                }`}
+              >
+                <div className="flex items-center justify-between text-[11px] font-semibold text-slate-400">
+                  <span>{label}</span>
+                  <span
+                    className={`font-mono text-[10px] font-bold ${
+                      onTarget
+                        ? 'text-emerald-400'
+                        : diff > 1
+                          ? 'text-amber-300'
+                          : 'text-sky-300'
+                    }`}
+                  >
+                    {onTarget ? '✓ AT TARGET' : diff > 0 ? `BLEED -${diff}` : `AIR +${Math.abs(diff)}`}
+                  </span>
+                </div>
+                <div className="my-1.5 font-mono text-2xl font-extrabold text-slate-100">
+                  {val} <span className="text-xs font-normal text-slate-400">PSI</span>
+                </div>
+                <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      onTarget ? 'bg-emerald-400' : diff > 1 ? 'bg-amber-400' : 'bg-sky-400'
+                    }`}
+                    style={{ width: `${Math.min(100, Math.round((val / 45) * 100))}%` }}
+                  />
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {statusBanner && (
@@ -239,7 +440,7 @@ export const TrailBoxView: React.FC = () => {
             </div>
             <div>
               <label className="mb-1 block font-mono text-[11px] text-slate-400">
-                OFF / Release Step (optional, for latching toggle)
+                OFF / Release Hex (optional)
               </label>
               <textarea
                 rows={2}
@@ -304,7 +505,7 @@ export const TrailBoxView: React.FC = () => {
                   <div className="flex items-center gap-1.5">
                     <span className="rounded bg-slate-900 px-2 py-0.5 font-mono text-[10px] font-semibold text-slate-400">
                       {sw.provenance === 'sim_demo'
-                        ? 'DEMO'
+                        ? 'PRESET'
                         : sw.provenance === 'sniffer_captured'
                           ? 'CAPTURED'
                           : 'CUSTOM'}

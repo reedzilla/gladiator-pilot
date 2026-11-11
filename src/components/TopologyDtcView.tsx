@@ -3,12 +3,14 @@ import {
   AlertTriangle,
   CheckCircle2,
   Code2,
+  Download,
   Radar,
   ShieldCheck,
   Trash2,
   XCircle,
 } from 'lucide-react';
 import { useGladiator } from '../context/GladiatorContext';
+import { describeJeepDtc } from '../lib/gladiator/dtcDescriptions';
 import {
   clearAllGladiatorDtcs,
   ModuleScanResult,
@@ -130,6 +132,34 @@ export const TopologyDtcView: React.FC = () => {
               <Trash2 className="h-4 w-4" />
               {sgwState === 'bypass_active' ? 'Clear All Faults' : 'Clear Faults (12+8 Needed)'}
             </button>
+
+            {results.length > 0 && (
+              <button
+                onClick={() => {
+                  const payload = JSON.stringify(
+                    {
+                      exportedAt: new Date().toISOString(),
+                      onlineCount,
+                      totalDtcs,
+                      modules: results,
+                    },
+                    null,
+                    2
+                  );
+                  const blob = new Blob([payload], { type: 'application/json' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `gladiator-health-report-${new Date().toISOString().slice(0, 10)}.json`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                className="flex min-h-[46px] items-center gap-1.5 rounded-xl border border-slate-700 bg-slate-900/90 px-3.5 py-2.5 text-xs font-bold text-slate-200 hover:bg-slate-800"
+              >
+                <Download className="h-4 w-4 text-sky-400" />
+                Export Report
+              </button>
+            )}
           </div>
         </div>
 
@@ -305,15 +335,32 @@ export const TopologyDtcView: React.FC = () => {
                       </div>
 
                       {row.dtcs.length > 0 && (
-                        <div className="mt-2.5 flex flex-wrap gap-1.5 pl-6">
-                          {row.dtcs.map((d) => (
-                            <span
-                              key={d.code}
-                              className="rounded-md border border-amber-500/40 bg-amber-950/40 px-2 py-1 font-mono text-xs font-bold text-amber-200"
-                            >
-                              {d.code} · {d.active ? 'ACTIVE' : 'STORED'}
-                            </span>
-                          ))}
+                        <div className="mt-2.5 space-y-2 pl-6">
+                          {row.dtcs.map((d) => {
+                            const info = describeJeepDtc(d.code);
+                            return (
+                              <div
+                                key={d.code}
+                                className="rounded-lg border border-amber-500/40 bg-amber-950/35 p-2.5"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="font-mono text-xs font-extrabold text-amber-200">
+                                    {d.code} · {d.active ? 'ACTIVE' : 'STORED'}
+                                  </span>
+                                  {info && (
+                                    <span className="text-xs font-semibold text-slate-200">
+                                      {info.title}
+                                    </span>
+                                  )}
+                                </div>
+                                {info?.stage2Note && (
+                                  <div className="mt-1 text-[11px] text-orange-200/90">
+                                    Tip: {info.stage2Note}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
 

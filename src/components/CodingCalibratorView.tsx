@@ -10,9 +10,11 @@ import {
   Settings2,
   ShieldCheck,
   Sliders,
+  Timer,
   UploadCloud,
 } from 'lucide-react';
 import { useGladiator } from '../context/GladiatorContext';
+import { playAlertChime } from '../lib/gladiator/telemetryLogger';
 import {
   applySurgicalBitFlip,
   applySurgicalBytePatch,
@@ -104,6 +106,17 @@ export const CodingCalibratorView: React.FC = () => {
   // Feedback toast + busy state
   const [busyCard, setBusyCard] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [sleepCountdownSec, setSleepCountdownSec] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (sleepCountdownSec === null || sleepCountdownSec <= 0) return;
+    const t = setTimeout(() => {
+      const next = sleepCountdownSec - 1;
+      setSleepCountdownSec(next);
+      if (next === 0) playAlertChime(false);
+    }, 1000);
+    return () => clearTimeout(t);
+  }, [sleepCountdownSec]);
 
   // Advanced Expert Hex Accordion state
   const [showExpertHex, setShowExpertHex] = useState(false);
@@ -363,17 +376,59 @@ export const CodingCalibratorView: React.FC = () => {
           </div>
         </div>
 
-        {bcmBaselineSnapshot && (
+        <div className="flex flex-wrap items-center gap-2">
           <button
-            onClick={handleRestoreAllStock}
-            disabled={!writeUnlocked || busyCard !== null}
-            className="flex min-h-[44px] items-center gap-2 rounded-xl border border-emerald-500/45 bg-emerald-500/15 px-4 py-2 text-xs font-bold text-emerald-200 transition hover:bg-emerald-500/25 disabled:opacity-40"
+            onClick={() => setSleepCountdownSec((s) => (s && s > 0 ? null : 60))}
+            title="Start 60-second FCA BCM bus-sleep countdown so new tire/lighting settings latch cleanly"
+            className="flex min-h-[44px] items-center gap-2 rounded-xl border border-orange-500/45 bg-orange-500/15 px-3.5 py-2 text-xs font-bold text-orange-200 transition hover:bg-orange-500/25"
           >
-            <RotateCcw className="h-4 w-4" />
-            {busyCard === 'restore' ? 'Restoring Stock...' : '1-Tap Restore All to Stock'}
+            <Timer className="h-4 w-4 text-orange-400" />
+            {sleepCountdownSec !== null && sleepCountdownSec > 0
+              ? `BCM Sleep: ${sleepCountdownSec}s`
+              : '60s BCM Latch Timer'}
           </button>
-        )}
+
+          {bcmBaselineSnapshot && (
+            <button
+              onClick={handleRestoreAllStock}
+              disabled={!writeUnlocked || busyCard !== null}
+              className="flex min-h-[44px] items-center gap-2 rounded-xl border border-emerald-500/45 bg-emerald-500/15 px-4 py-2 text-xs font-bold text-emerald-200 transition hover:bg-emerald-500/25 disabled:opacity-40"
+            >
+              <RotateCcw className="h-4 w-4" />
+              {busyCard === 'restore' ? 'Restoring Stock...' : '1-Tap Restore All to Stock'}
+            </button>
+          )}
+        </div>
       </div>
+
+      {sleepCountdownSec !== null && (
+        <div className="uconnect-card rounded-2xl border border-orange-500/50 bg-gradient-to-r from-orange-950/35 via-slate-900/90 to-slate-900/90 p-4 space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="text-xs font-bold uppercase tracking-wider text-orange-300">
+              {sleepCountdownSec > 0
+                ? `FCA BCM Bus-Sleep Reboot Procedure (${sleepCountdownSec}s remaining)`
+                : '✅ 60s Bus Sleep Complete — Safe to Cycle Ignition ON!'}
+            </div>
+            <button
+              onClick={() => setSleepCountdownSec(null)}
+              className="text-xs text-slate-400 hover:text-slate-200"
+            >
+              Dismiss
+            </button>
+          </div>
+          <div className="text-xs text-slate-300">
+            1. Turn Ignition <strong>OFF</strong> · 2. Open &amp; close driver door once · 3. Wait for
+            cluster screen blackout until timer reaches <strong>0s</strong> so ABS, TCM &amp; IPC latch
+            the updated BCM configuration without fault codes.
+          </div>
+          <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
+            <div
+              className="h-full rounded-full bg-orange-500 transition-all duration-700"
+              style={{ width: `${((60 - sleepCountdownSec) / 60) * 100}%` }}
+            />
+          </div>
+        </div>
+      )}
 
       {feedback && (
         <div

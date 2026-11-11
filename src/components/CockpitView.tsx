@@ -1,8 +1,57 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Flame, Lock, Pause, Play, RefreshCw, RotateCcw, Thermometer } from 'lucide-react';
+import {
+  AlertTriangle,
+  CircleDot,
+  Download,
+  Eye,
+  Flame,
+  Lock,
+  Navigation,
+  Pause,
+  Play,
+  RefreshCw,
+  RotateCcw,
+  Thermometer,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 import { useGladiator } from '../context/GladiatorContext';
+import { useWakeLock } from '../hooks/useWakeLock';
 import { EcoDieselSnapshot, pollEcoDieselFastFrame } from '../lib/gladiator/ecodieselPids';
+import {
+  evaluateStage2Alerts,
+  exportTelemetryCsv,
+  LoggedTelemetryRow,
+  playAlertChime,
+} from '../lib/gladiator/telemetryLogger';
 import { GarageLaunchpad } from './GarageLaunchpad';
+import { OffRoadClinometer } from './OffRoadClinometer';
+
+const MiniSparkline: React.FC<{ values: number[]; color: string }> = ({ values, color }) => {
+  if (values.length < 2) return null;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(1, max - min);
+  const pts = values
+    .map((v, idx) => {
+      const x = (idx / (values.length - 1)) * 120;
+      const y = 24 - ((v - min) / span) * 20 - 2;
+      return `${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(' ');
+  return (
+    <svg viewBox="0 0 120 24" className="mt-1.5 h-6 w-full overflow-visible">
+      <polyline
+        fill="none"
+        stroke={color}
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        points={pts}
+      />
+    </svg>
+  );
+};
 
 interface RadialDialProps {
   label: string;
@@ -186,29 +235,106 @@ export const CockpitView: React.FC = () => {
   const [peakBoost, setPeakBoost] = useState<number>(0);
   const [peakEgt1, setPeakEgt1] = useState<number>(0);
   const [pollError, setPollError] = useState<string | null>(null);
+
+  // Rolling 60-sample sparkline buffers
+  const [egtHistory, setEgtHistory] = useState<number[]>([]);
+  const [railHistory, setRailHistory] = useState<number[]>([]);
+  const [iatHistory, setIatHistory] = useState<number[]>([]);
+
+  // Black-Box Flight Recorder (CSV)
+  const [recording, setRecording] = useState(false);
+  const [recordedRows, setRecordedRows] = useState<LoggedTelemetryRow[]>([]);
+  const recordingRef = useRef(false);
+
+  // Live Phone GPS Speedo Cross-Check
+  const [gpsEnabled, setGpsEnabled] = useState(false);
+  const [gpsMph, setGpsMph] = useState<number | null>(null);
+  const gpsMphRef = useRef<number | null>(null);
+
+  // Stage 2 Audible Chime Mute
+  const [audioAlertsOn, setAudioAlertsOn] = useState(true);
+  const lastChimeAtRef = useRef<number>(0);
+
+  const awakeLocked = useWakeLock(Boolean(session && polling));
+
   const loopActiveRef = useRef(false);
   const cycleCountRef = useRef(0);
+
+  useEffect(() => {
+    recordingRef.current = recording;
+  }, [recording]);
+
+  useEffect(() => {
+    if (!gpsEnabled || !('geolocation' in navigator)) {
+      setGpsMph(null);
+      gpsMphRef.current = null;
+      return;
+    }
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        if (pos.coords.speed !== null && pos.coords.speed >= 0) {
+          const mph = Math.round(pos.coords.speed * 2.23694 * 10) / 10;
+          setGpsMph(mph);
+          gpsMphRef.current = mph;
+        }
+      },
+      () => undefined,
+      { enableHighAccuracy: true, maximumAge: 1000 }
+    );
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [gpsEnabled]);
 
   const sampleOnce = useCallback(
     async (withSlowDids = true) => {
       if (!session) return;
       const snap = await pollEcoDieselFastFrame(session, withSlowDids, stage2DeleteMode);
-      setData((prev) => ({
-        ...snap,
-        transFluidF: snap.transFluidF ?? prev?.transFluidF ?? null,
-        dpfSootPct: snap.dpfSootPct ?? prev?.dpfSootPct ?? null,
-        odometerMi: snap.odometerMi ?? prev?.odometerMi ?? null,
-        odometerSource: snap.odometerSource ?? prev?.odometerSource ?? null,
-      }));
+      let mergedSnap: EcoDieselSnapshot = snap;
+
+      setData((prev) => {
+        mergedSnap = {
+          ...snap,
+          intakeTempF: snap.intakeTempF ?? prev?.intakeTempF ?? null,
+          coolantF: snap.coolantF ?? prev?.coolantF ?? null,
+          oilTempF: snap.oilTempF ?? prev?.oilTempF ?? null,
+          batteryVolts: snap.batteryVolts ?? prev?.batteryVolts ?? null,
+          transFluidF: snap.transFluidF ?? prev?.transFluidF ?? null,
+          dpfSootPct: snap.dpfSootPct ?? prev?.dpfSootPct ?? null,
+          dpfDiffPsi: snap.dpfDiffPsi ?? prev?.dpfDiffPsi ?? null,
+          regenActive: snap.regenActive ?? prev?.regenActive ?? null,
+          odometerMi: snap.odometerMi ?? prev?.odometerMi ?? null,
+          odometerSource: snap.odometerSource ?? prev?.odometerSource ?? null,
+        };
+        return mergedSnap;
+      });
+
       if (snap.boostPsi !== null && snap.boostPsi > peakBoost) {
         setPeakBoost(snap.boostPsi);
       }
-      if (snap.egt1PreTurboF !== null && snap.egt1PreTurboF > peakEgt1) {
-        setPeakEgt1(snap.egt1PreTurboF);
+      if (snap.egt1PreTurboF !== null) {
+        if (snap.egt1PreTurboF > peakEgt1) setPeakEgt1(snap.egt1PreTurboF);
+        setEgtHistory((h) => (h.length >= 60 ? [...h.slice(-59), snap.egt1PreTurboF!] : [...h, snap.egt1PreTurboF!]));
       }
-      updateLiveVitals(snap.batteryVolts, snap.speedMph);
+      if (snap.railPressurePsi !== null) {
+        setRailHistory((h) => (h.length >= 60 ? [...h.slice(-59), snap.railPressurePsi!] : [...h, snap.railPressurePsi!]));
+      }
+      if (mergedSnap.intakeTempF !== null) {
+        setIatHistory((h) => (h.length >= 60 ? [...h.slice(-59), mergedSnap.intakeTempF!] : [...h, mergedSnap.intakeTempF!]));
+      }
+
+      if (recordingRef.current) {
+        const row: LoggedTelemetryRow = { ...mergedSnap, gpsMph: gpsMphRef.current };
+        setRecordedRows((prev) => (prev.length >= 18000 ? [...prev.slice(-17999), row] : [...prev, row]));
+      }
+
+      const activeAlerts = evaluateStage2Alerts(mergedSnap);
+      if (audioAlertsOn && activeAlerts.length > 0 && Date.now() - lastChimeAtRef.current > 8000) {
+        lastChimeAtRef.current = Date.now();
+        playAlertChime(activeAlerts.some((a) => a.severity === 'critical'));
+      }
+
+      updateLiveVitals(mergedSnap.batteryVolts, snap.speedMph);
     },
-    [peakBoost, peakEgt1, session, stage2DeleteMode, updateLiveVitals]
+    [audioAlertsOn, peakBoost, peakEgt1, session, stage2DeleteMode, updateLiveVitals]
   );
 
   // Auto-start live gauges as soon as truck / demo connects!
@@ -219,6 +345,9 @@ export const CockpitView: React.FC = () => {
       setData(null);
       setPeakBoost(0);
       setPeakEgt1(0);
+      setEgtHistory([]);
+      setRailHistory([]);
+      setIatHistory([]);
     }
   }, [session]);
 
@@ -231,10 +360,10 @@ export const CockpitView: React.FC = () => {
     loopActiveRef.current = true;
     let timer: ReturnType<typeof setTimeout> | null = null;
 
-    const tick = async () => {
+      const tick = async () => {
       if (!loopActiveRef.current || !session) return;
       try {
-        const includeSlow = cycleCountRef.current % 5 === 0;
+        const includeSlow = cycleCountRef.current % 4 === 0;
         cycleCountRef.current++;
         await sampleOnce(includeSlow);
         setPollError(null);
@@ -242,7 +371,7 @@ export const CockpitView: React.FC = () => {
         setPollError((err as Error).message);
       }
       if (loopActiveRef.current) {
-        timer = setTimeout(tick, 320);
+        timer = setTimeout(tick, 200);
       }
     };
 
@@ -259,20 +388,47 @@ export const CockpitView: React.FC = () => {
   }
 
   const soot = data?.dpfSootPct ?? 0;
+  const activeAlerts = evaluateStage2Alerts(data);
+
+  const handleDownloadCsv = () => {
+    if (recordedRows.length === 0) return;
+    const csv = exportTelemetryCsv(recordedRows);
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `gladiator-3.0D-flightlog-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const gpsDelta =
+    gpsMph !== null && data?.speedMph !== null && data?.speedMph !== undefined
+      ? Math.round((gpsMph - data.speedMph) * 10) / 10
+      : null;
 
   return (
     <div className="space-y-5">
       {/* Compact Live Cluster Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800/90 bg-slate-900/60 px-4 py-2.5">
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           <span
             className={`h-2.5 w-2.5 rounded-full ${
               polling ? 'animate-pulse bg-emerald-400 shadow-[0_0_8px_#34d399]' : 'bg-amber-400'
             }`}
           />
           <span className="text-xs font-bold uppercase tracking-wider text-slate-200">
-            {polling ? 'Live EcoDiesel Telemetry Active' : 'Telemetry Paused'}
+            {polling ? 'Live 3.0D Fast-Loop' : 'Telemetry Paused'}
           </span>
+          {awakeLocked && (
+            <span
+              title="Screen Wake Lock active — display will not dim while driving"
+              className="inline-flex items-center gap-1 rounded border border-emerald-500/35 bg-emerald-500/10 px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-300"
+            >
+              <Eye className="h-3 w-3" />
+              WAKE
+            </span>
+          )}
           {data?.odometerMi && (
             <span className="hidden font-mono text-xs text-slate-400 sm:inline">
               · {data.odometerMi.toLocaleString()} mi
@@ -292,6 +448,54 @@ export const CockpitView: React.FC = () => {
           >
             <Lock className="h-3.5 w-3.5 text-orange-300" />
             {stage2DeleteMode ? 'STAGE 2 DELETE · ECM LOCKED' : 'STOCK DPF PROFILE'}
+          </button>
+
+          {/* GPS Speedo Cross-Check Toggle */}
+          <button
+            onClick={() => setGpsEnabled((g) => !g)}
+            title="Cross-check Gladiator OBD speedometer against live Phone GPS speed"
+            className={`flex min-h-[38px] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 font-mono text-[11px] font-bold transition ${
+              gpsEnabled
+                ? 'border-emerald-500/55 bg-emerald-500/20 text-emerald-200'
+                : 'border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            <Navigation className="h-3.5 w-3.5" />
+            GPS
+          </button>
+
+          {/* Black-Box Flight Recorder (Banks iDash style CSV log) */}
+          <button
+            onClick={() => setRecording((r) => !r)}
+            title="Record timestamped pull / tow telemetry log to CSV"
+            className={`flex min-h-[38px] items-center gap-1.5 rounded-lg border px-2.5 py-1.5 font-mono text-[11px] font-bold transition ${
+              recording
+                ? 'animate-pulse border-red-500/70 bg-red-500/25 text-red-200'
+                : 'border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            <CircleDot className="h-3.5 w-3.5 text-red-400" />
+            {recording ? `REC (${recordedRows.length})` : 'REC'}
+          </button>
+
+          {recordedRows.length > 0 && (
+            <button
+              onClick={handleDownloadCsv}
+              title="Download recorded CSV data log"
+              className="flex min-h-[38px] items-center gap-1 rounded-lg border border-sky-500/45 bg-sky-500/15 px-2.5 py-1.5 font-mono text-[11px] font-bold text-sky-200 hover:bg-sky-500/25"
+            >
+              <Download className="h-3.5 w-3.5" />
+              CSV ({recordedRows.length})
+            </button>
+          )}
+
+          {/* Audible Thermal Chime Mute Toggle */}
+          <button
+            onClick={() => setAudioAlertsOn((a) => !a)}
+            title="Toggle audible cabin alert chime for high EGT / Trans / Coolant"
+            className="flex min-h-[38px] items-center rounded-lg border border-slate-700 bg-slate-800/80 px-2.5 py-1.5 text-slate-300 hover:bg-slate-700"
+          >
+            {audioAlertsOn ? <Volume2 className="h-3.5 w-3.5 text-orange-300" /> : <VolumeX className="h-3.5 w-3.5 text-slate-500" />}
           </button>
 
           <button
@@ -322,6 +526,24 @@ export const CockpitView: React.FC = () => {
           )}
         </div>
       </div>
+
+      {activeAlerts.length > 0 && (
+        <div className="space-y-2">
+          {activeAlerts.map((al) => (
+            <div
+              key={al.id}
+              className={`flex items-center gap-2.5 rounded-xl border px-4 py-3 text-xs font-bold ${
+                al.severity === 'critical'
+                  ? 'animate-pulse border-red-500 bg-red-950/60 text-red-100'
+                  : 'border-amber-500/50 bg-amber-950/40 text-amber-100'
+              }`}
+            >
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <span>{al.message}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {pollError && (
         <div className="rounded-xl border border-red-500/40 bg-red-950/40 px-4 py-2.5 text-xs text-red-200">
@@ -363,10 +585,15 @@ export const CockpitView: React.FC = () => {
           unit="MPH"
           accent="emerald"
           subLabel={
-            data?.railPressurePsi
-              ? `Rail ${(data.railPressurePsi / 1000).toFixed(1)}k PSI`
-              : 'Common Rail'
+            gpsEnabled
+              ? gpsMph !== null
+                ? `GPS ${gpsMph} (${gpsDelta && gpsDelta > 0 ? `+${gpsDelta}` : gpsDelta ?? 0})`
+                : 'GPS Acquiring...'
+              : data?.railPressurePsi
+                ? `Rail ${(data.railPressurePsi / 1000).toFixed(1)}k PSI`
+                : 'Tap GPS to Verify'
           }
+          onBadgeClick={() => setGpsEnabled((g) => !g)}
         />
       </div>
 
@@ -476,6 +703,7 @@ export const CockpitView: React.FC = () => {
                   <span className="text-amber-300/80">Grade/Tow 1,250°F</span>
                   <span className="text-red-400/80">Limit 1,400°F+</span>
                 </div>
+                <MiniSparkline values={egtHistory} color="#fb923c" />
               </div>
             </div>
 
@@ -489,6 +717,7 @@ export const CockpitView: React.FC = () => {
                   ? `${data.railPressurePsi.toLocaleString()} PSI`
                   : '—'}
               </div>
+              <MiniSparkline values={railHistory} color="#38bdf8" />
               <span className="font-mono text-[10px] text-slate-500">
                 Bosch High-Pressure Rail (0123)
               </span>
@@ -504,6 +733,7 @@ export const CockpitView: React.FC = () => {
                   ? `${data.intakeTempF}°F`
                   : '—'}
               </div>
+              <MiniSparkline values={iatHistory} color="#34d399" />
               <span className="font-mono text-[10px] text-slate-500">
                 Intercooler Manifold Out (010F)
               </span>
@@ -623,6 +853,9 @@ export const CockpitView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Row 4: Uconnect Pitch & Roll Off-Road Inclinometer */}
+      <OffRoadClinometer />
     </div>
   );
 };

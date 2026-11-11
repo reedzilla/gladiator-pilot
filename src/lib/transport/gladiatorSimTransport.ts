@@ -70,6 +70,13 @@ export class GladiatorSimTransport implements RawTransport {
     // 0132: Comfort / Trail / Aux Switch Bank Block (Aux 1-4 Latching/Momentary, Belt Chime, Splash Screen)
     this.didStore.set('0132', [0x00, 0x03, 0x01, 0x00, 0x02, 0x00]);
 
+    // DE01..DE03: FCA PowerNet PROXI / Vehicle Configuration 1-3 Mirrors
+    this.didStore.set('DE01', [0x09, 0xd5, 0x01, 0x75, 0x25, 0x25, 0x01, 0x00]);
+    this.didStore.set('DE02', [0x00, 0x10, 0x04, 0x01, 0x00, 0x00]);
+
+    // D112: 4-Corner Live TPMS Sensor Pressures (FL, FR, RL, RR in PSI: 37, 37, 36, 37)
+    this.didStore.set('D112', [37, 37, 36, 37]);
+
     // Seed sample non-critical DTCs so All-Module Scan & Clear can be tested end-to-end
     this.dtcStore.set('747', [[0x40, 0x22, 0x28]]); // C0022-28 Brake Booster Solenoid (stored)
     this.dtcStore.set('620', [[0x96, 0x2c, 0x08]]); // B162C-08 Left Low Beam Circuit (e.g. after LED swap!)
@@ -291,8 +298,9 @@ export class GladiatorSimTransport implements RawTransport {
       return;
     }
 
-    // Handle OBD / UDS hex payload
-    const reqBytes = hexToBytes(cmd);
+    // Handle OBD / UDS hex payload (strip optional ELM327 trailing frame-count hint like "010C 1")
+    const hexOnly = cmd.replace(/\s+[1-9]$/, '');
+    const reqBytes = hexToBytes(hexOnly);
     if (reqBytes.length === 0) {
       this.emitReply(['?']);
       return;

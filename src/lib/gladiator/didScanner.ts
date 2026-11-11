@@ -30,6 +30,20 @@ export const DID_SCAN_PRESETS: readonly DidScanPreset[] = [
     description: 'Primary FCA body configuration & odometer registers (97 DIDs, ~12s).',
   },
   {
+    id: 'fca_proxi_de',
+    label: 'FCA PowerNet PROXI / VehConfig 1–7 (DE00 – DE1F)',
+    startDid: 0xde00,
+    endDid: 0xde1f,
+    description: 'Stellantis PROXI configuration blocks (Tire Size, Axle, LEDs, Aux Switches) (32 DIDs, ~4s).',
+  },
+  {
+    id: 'bcm_live_d1',
+    label: 'BCM Live Sensors & 4-Corner TPMS (D100 – D12F)',
+    startDid: 0xd100,
+    endDid: 0xd12f,
+    description: 'Live body I/O states, exterior lamp status & 4-corner TPMS pressures (48 DIDs, ~6s).',
+  },
+  {
     id: 'stellantis_telemetry',
     label: 'Stellantis Extended Powertrain (1E00 – 1E40)',
     startDid: 0x1e00,
