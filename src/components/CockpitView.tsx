@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Flame, Pause, Play, RefreshCw, RotateCcw, Thermometer } from 'lucide-react';
+import { Flame, Lock, Pause, Play, RefreshCw, RotateCcw, Thermometer } from 'lucide-react';
 import { useGladiator } from '../context/GladiatorContext';
 import { EcoDieselSnapshot, pollEcoDieselFastFrame } from '../lib/gladiator/ecodieselPids';
 import { GarageLaunchpad } from './GarageLaunchpad';
@@ -179,10 +179,12 @@ const ThermalBar: React.FC<ThermalBarProps> = ({
 };
 
 export const CockpitView: React.FC = () => {
-  const { session, snifferRunning, updateLiveVitals } = useGladiator();
+  const { session, snifferRunning, updateLiveVitals, stage2DeleteMode, setStage2DeleteMode } =
+    useGladiator();
   const [data, setData] = useState<EcoDieselSnapshot | null>(null);
   const [polling, setPolling] = useState(true);
   const [peakBoost, setPeakBoost] = useState<number>(0);
+  const [peakEgt1, setPeakEgt1] = useState<number>(0);
   const [pollError, setPollError] = useState<string | null>(null);
   const loopActiveRef = useRef(false);
   const cycleCountRef = useRef(0);
@@ -190,7 +192,7 @@ export const CockpitView: React.FC = () => {
   const sampleOnce = useCallback(
     async (withSlowDids = true) => {
       if (!session) return;
-      const snap = await pollEcoDieselFastFrame(session, withSlowDids);
+      const snap = await pollEcoDieselFastFrame(session, withSlowDids, stage2DeleteMode);
       setData((prev) => ({
         ...snap,
         transFluidF: snap.transFluidF ?? prev?.transFluidF ?? null,
@@ -201,9 +203,12 @@ export const CockpitView: React.FC = () => {
       if (snap.boostPsi !== null && snap.boostPsi > peakBoost) {
         setPeakBoost(snap.boostPsi);
       }
+      if (snap.egt1PreTurboF !== null && snap.egt1PreTurboF > peakEgt1) {
+        setPeakEgt1(snap.egt1PreTurboF);
+      }
       updateLiveVitals(snap.batteryVolts, snap.speedMph);
     },
-    [peakBoost, session, updateLiveVitals]
+    [peakBoost, peakEgt1, session, stage2DeleteMode, updateLiveVitals]
   );
 
   // Auto-start live gauges as soon as truck / demo connects!
@@ -213,6 +218,7 @@ export const CockpitView: React.FC = () => {
     } else {
       setData(null);
       setPeakBoost(0);
+      setPeakEgt1(0);
     }
   }, [session]);
 
@@ -274,7 +280,20 @@ export const CockpitView: React.FC = () => {
           )}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={() => setStage2DeleteMode(!stage2DeleteMode)}
+            title="Switch between Stage 2 Deleted ECM profile (high-range boost + EGT1 pyrometer, skips deleted DPF polls) and Stock DPF profile"
+            className={`flex min-h-[38px] items-center gap-1.5 rounded-lg border px-3 py-1.5 font-mono text-[11px] font-bold transition ${
+              stage2DeleteMode
+                ? 'border-orange-500/50 bg-orange-500/15 text-orange-200 hover:bg-orange-500/25'
+                : 'border-slate-700 bg-slate-800/80 text-slate-300 hover:bg-slate-700'
+            }`}
+          >
+            <Lock className="h-3.5 w-3.5 text-orange-300" />
+            {stage2DeleteMode ? 'STAGE 2 DELETE · ECM LOCKED' : 'STOCK DPF PROFILE'}
+          </button>
+
           <button
             onClick={() => setPolling((p) => !p)}
             disabled={snifferRunning}
@@ -324,14 +343,14 @@ export const CockpitView: React.FC = () => {
         />
 
         <RadialDial
-          label="Turbocharger Boost"
+          label={stage2DeleteMode ? 'Stage 2 Turbo Boost' : 'Turbocharger Boost'}
           value={data?.boostPsi ?? null}
           min={-5}
-          max={30}
+          max={stage2DeleteMode ? 42 : 30}
           decimals={1}
           unit="PSI"
           accent="sky"
-          warnThreshold={26}
+          warnThreshold={stage2DeleteMode ? 35 : 26}
           subLabel={`Peak +${peakBoost.toFixed(1)} ↺`}
           onBadgeClick={() => setPeakBoost(0)}
         />
@@ -360,9 +379,12 @@ export const CockpitView: React.FC = () => {
               Drivetrain Thermal Management (3.0D + ZF 8HP75)
             </h3>
           </div>
-          {peakBoost > 0 && (
+          {(peakBoost > 0 || peakEgt1 > 0) && (
             <button
-              onClick={() => setPeakBoost(0)}
+              onClick={() => {
+                setPeakBoost(0);
+                setPeakEgt1(0);
+              }}
               className="inline-flex items-center gap-1 text-[11px] text-slate-400 hover:text-slate-200"
             >
               <RotateCcw className="h-3 w-3" />
@@ -396,118 +418,211 @@ export const CockpitView: React.FC = () => {
         </div>
       </div>
 
-      {/* Row 3: Visual EcoDiesel Exhaust & DPF Flow Pipeline */}
-      <div className="uconnect-card rounded-2xl border border-slate-800/90 p-5 space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <Flame className="h-4 w-4 text-orange-400" />
-            <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
-              EcoDiesel Aftertreatment &amp; DPF Flow Pipeline
-            </h3>
-          </div>
-
-          <span
-            className={`rounded-full border px-3 py-1 font-mono text-xs font-bold ${
-              data?.regenActive
-                ? 'animate-pulse border-orange-400 bg-orange-500/25 text-orange-200'
-                : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
-            }`}
-          >
-            {data?.regenActive ? '🔥 ACTIVE DPF REGEN RUNNING' : 'DPF REGEN: IDLE / NORMAL'}
-          </span>
-        </div>
-
-        <div className="grid grid-cols-1 items-stretch gap-3 lg:grid-cols-12">
-          {/* Stage 1: Pre-Turbo EGT1 */}
-          <div className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-3.5 lg:col-span-2">
-            <span className="text-[11px] font-semibold uppercase text-slate-400">
-              1 · Turbo In
-            </span>
-            <div className="my-2 font-mono text-2xl font-extrabold text-orange-300">
-              {data?.egt1PreTurboF !== null && data?.egt1PreTurboF !== undefined
-                ? `${data.egt1PreTurboF}°F`
-                : '—'}
+      {/* Row 3: Stage 2 Pyrometer & Fueling Deck OR Stock DPF Flow Pipeline */}
+      {stage2DeleteMode ? (
+        <div className="uconnect-card rounded-2xl border border-slate-800/90 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Flame className="h-4 w-4 text-orange-400" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                Stage 2 3.0D Pyrometer, Charge-Air &amp; High-Pressure Fuel Deck
+              </h3>
             </div>
-            <span className="font-mono text-[10px] text-slate-500">EGT Sensor 1</span>
-          </div>
 
-          {/* Stage 2: DOC Catalyst Out EGT2 */}
-          <div className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-3.5 lg:col-span-2">
-            <span className="text-[11px] font-semibold uppercase text-slate-400">
-              2 · Catalyst
+            <span className="rounded-full border border-emerald-500/35 bg-emerald-500/10 px-3 py-1 font-mono text-[11px] font-bold text-emerald-300">
+              PCM 7E0 WRITE-LOCKED (TUNE SAFE) · DPF/SCR/EGR OFF
             </span>
-            <div className="my-2 font-mono text-2xl font-extrabold text-amber-200">
-              {data?.egt2DocOutF !== null && data?.egt2DocOutF !== undefined
-                ? `${data.egt2DocOutF}°F`
-                : '—'}
-            </div>
-            <span className="font-mono text-[10px] text-slate-500">DOC Out (EGT 2)</span>
           </div>
 
-          {/* Stage 3: Centerpiece DPF Soot % + Diff Pressure + EGT3 */}
-          <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-orange-500/35 bg-gradient-to-r from-orange-950/20 via-slate-950/80 to-slate-950/80 p-4 lg:col-span-6">
-            <div className="space-y-1">
-              <div className="text-xs font-bold uppercase tracking-wider text-orange-300">
-                3 · Diesel Particulate Filter (DPF)
-              </div>
-              <div className="font-mono text-3xl font-extrabold text-slate-100">
-                {data?.dpfSootPct !== null && data?.dpfSootPct !== undefined
-                  ? `${data.dpfSootPct}%`
-                  : '—%'}{' '}
-                <span className="text-xs font-semibold text-slate-400">Soot Load</span>
-              </div>
-              <div className="flex flex-wrap gap-3 pt-1 font-mono text-xs text-slate-300">
-                <span>
-                  Inlet (EGT 3):{' '}
-                  <strong className="text-amber-200">
-                    {data?.egt3DpfInF !== null && data?.egt3DpfInF !== undefined
-                      ? `${data.egt3DpfInF}°F`
+          <div className="grid grid-cols-1 items-stretch gap-3 lg:grid-cols-12">
+            {/* Hero Pre-Turbo EGT 1 Pyrometer */}
+            <div className="flex flex-col justify-between rounded-xl border border-orange-500/35 bg-gradient-to-r from-orange-950/25 via-slate-950/80 to-slate-950/80 p-4 lg:col-span-6">
+              <div className="flex flex-wrap items-start justify-between gap-2">
+                <div>
+                  <div className="text-xs font-bold uppercase tracking-wider text-orange-300">
+                    Pre-Turbo Manifold Pyrometer (EGT 1)
+                  </div>
+                  <div className="mt-1 font-mono text-3xl font-extrabold text-slate-100">
+                    {data?.egt1PreTurboF !== null && data?.egt1PreTurboF !== undefined
+                      ? `${data.egt1PreTurboF}°F`
                       : '—'}
-                  </strong>
-                </span>
-                <span>·</span>
-                <span>
-                  Backpressure:{' '}
-                  <strong className="text-sky-300">
-                    {data?.dpfDiffPsi !== null && data?.dpfDiffPsi !== undefined
-                      ? `${data.dpfDiffPsi} PSI`
-                      : '—'}
-                  </strong>
+                  </div>
+                </div>
+                <span className="rounded-md border border-slate-700/80 bg-slate-900/90 px-2.5 py-1 font-mono text-xs text-amber-200">
+                  Peak {peakEgt1 > 0 ? `${peakEgt1}°F` : '—'}
                 </span>
               </div>
+
+              <div className="mt-3 space-y-1.5">
+                <div className="h-3 w-full overflow-hidden rounded-full bg-slate-800">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      (data?.egt1PreTurboF ?? 0) >= 1375
+                        ? 'bg-red-500'
+                        : (data?.egt1PreTurboF ?? 0) >= 1200
+                          ? 'bg-amber-400'
+                          : 'bg-emerald-400'
+                    }`}
+                    style={{
+                      width: `${Math.min(
+                        100,
+                        Math.max(5, (((data?.egt1PreTurboF ?? 300) - 250) / (1550 - 250)) * 100)
+                      )}%`,
+                    }}
+                  />
+                </div>
+                <div className="flex justify-between font-mono text-[10px] text-slate-400">
+                  <span>Cruise &lt;1,150°F</span>
+                  <span className="text-amber-300/80">Grade/Tow 1,250°F</span>
+                  <span className="text-red-400/80">Limit 1,400°F+</span>
+                </div>
+              </div>
             </div>
 
-            {/* Visual Soot Fill Bar */}
-            <div className="w-full sm:w-36 space-y-1">
-              <div className="flex justify-between font-mono text-[10px] text-slate-400">
-                <span>0% Clean</span>
-                <span>80% Regen</span>
+            {/* Common Rail Fuel Pressure (CP4.2 / Rail Monitor) */}
+            <div className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-4 lg:col-span-3">
+              <span className="text-[11px] font-semibold uppercase text-slate-400">
+                Common Rail Fuel PSI
+              </span>
+              <div className="my-2 font-mono text-2xl font-extrabold text-sky-300">
+                {data?.railPressurePsi !== null && data?.railPressurePsi !== undefined
+                  ? `${data.railPressurePsi.toLocaleString()} PSI`
+                  : '—'}
               </div>
-              <div className="h-3 w-full overflow-hidden rounded-full bg-slate-800">
-                <div
-                  className={`h-full rounded-full transition-all duration-300 ${
-                    soot >= 80 ? 'bg-red-500' : soot >= 60 ? 'bg-amber-400' : 'bg-emerald-400'
-                  }`}
-                  style={{ width: `${Math.min(100, Math.max(4, soot))}%` }}
-                />
-              </div>
+              <span className="font-mono text-[10px] text-slate-500">
+                Bosch High-Pressure Rail (0123)
+              </span>
             </div>
-          </div>
 
-          {/* Stage 4: Tailpipe Out EGT4 */}
-          <div className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-3.5 lg:col-span-2">
-            <span className="text-[11px] font-semibold uppercase text-slate-400">
-              4 · Tailpipe
-            </span>
-            <div className="my-2 font-mono text-2xl font-extrabold text-sky-200">
-              {data?.egt4DpfOutF !== null && data?.egt4DpfOutF !== undefined
-                ? `${data.egt4DpfOutF}°F`
-                : '—'}
+            {/* Intercooler Charge-Air Temp (IAT) */}
+            <div className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-4 lg:col-span-3">
+              <span className="text-[11px] font-semibold uppercase text-slate-400">
+                Charge-Air (IAT)
+              </span>
+              <div className="my-2 font-mono text-2xl font-extrabold text-emerald-300">
+                {data?.intakeTempF !== null && data?.intakeTempF !== undefined
+                  ? `${data.intakeTempF}°F`
+                  : '—'}
+              </div>
+              <span className="font-mono text-[10px] text-slate-500">
+                Intercooler Manifold Out (010F)
+              </span>
             </div>
-            <span className="font-mono text-[10px] text-slate-500">DPF Out (EGT 4)</span>
           </div>
         </div>
-      </div>
+      ) : (
+        <div className="uconnect-card rounded-2xl border border-slate-800/90 p-5 space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <Flame className="h-4 w-4 text-orange-400" />
+              <h3 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                EcoDiesel Aftertreatment &amp; DPF Flow Pipeline
+              </h3>
+            </div>
+
+            <span
+              className={`rounded-full border px-3 py-1 font-mono text-xs font-bold ${
+                data?.regenActive
+                  ? 'animate-pulse border-orange-400 bg-orange-500/25 text-orange-200'
+                  : 'border-emerald-500/35 bg-emerald-500/10 text-emerald-300'
+              }`}
+            >
+              {data?.regenActive ? '🔥 ACTIVE DPF REGEN RUNNING' : 'DPF REGEN: IDLE / NORMAL'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 items-stretch gap-3 lg:grid-cols-12">
+            {/* Stage 1: Pre-Turbo EGT1 */}
+            <div className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-3.5 lg:col-span-2">
+              <span className="text-[11px] font-semibold uppercase text-slate-400">
+                1 · Turbo In
+              </span>
+              <div className="my-2 font-mono text-2xl font-extrabold text-orange-300">
+                {data?.egt1PreTurboF !== null && data?.egt1PreTurboF !== undefined
+                  ? `${data.egt1PreTurboF}°F`
+                  : '—'}
+              </div>
+              <span className="font-mono text-[10px] text-slate-500">EGT Sensor 1</span>
+            </div>
+
+            {/* Stage 2: DOC Catalyst Out EGT2 */}
+            <div className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-3.5 lg:col-span-2">
+              <span className="text-[11px] font-semibold uppercase text-slate-400">
+                2 · Catalyst
+              </span>
+              <div className="my-2 font-mono text-2xl font-extrabold text-amber-200">
+                {data?.egt2DocOutF !== null && data?.egt2DocOutF !== undefined
+                  ? `${data.egt2DocOutF}°F`
+                  : '—'}
+              </div>
+              <span className="font-mono text-[10px] text-slate-500">DOC Out (EGT 2)</span>
+            </div>
+
+            {/* Stage 3: Centerpiece DPF Soot % + Diff Pressure + EGT3 */}
+            <div className="flex flex-wrap items-center justify-between gap-4 rounded-xl border border-orange-500/35 bg-gradient-to-r from-orange-950/20 via-slate-950/80 to-slate-950/80 p-4 lg:col-span-6">
+              <div className="space-y-1">
+                <div className="text-xs font-bold uppercase tracking-wider text-orange-300">
+                  3 · Diesel Particulate Filter (DPF)
+                </div>
+                <div className="font-mono text-3xl font-extrabold text-slate-100">
+                  {data?.dpfSootPct !== null && data?.dpfSootPct !== undefined
+                    ? `${data.dpfSootPct}%`
+                    : '—%'}{' '}
+                  <span className="text-xs font-semibold text-slate-400">Soot Load</span>
+                </div>
+                <div className="flex flex-wrap gap-3 pt-1 font-mono text-xs text-slate-300">
+                  <span>
+                    Inlet (EGT 3):{' '}
+                    <strong className="text-amber-200">
+                      {data?.egt3DpfInF !== null && data?.egt3DpfInF !== undefined
+                        ? `${data.egt3DpfInF}°F`
+                        : '—'}
+                    </strong>
+                  </span>
+                  <span>·</span>
+                  <span>
+                    Backpressure:{' '}
+                    <strong className="text-sky-300">
+                      {data?.dpfDiffPsi !== null && data?.dpfDiffPsi !== undefined
+                        ? `${data.dpfDiffPsi} PSI`
+                        : '—'}
+                    </strong>
+                  </span>
+                </div>
+              </div>
+
+              {/* Visual Soot Fill Bar */}
+              <div className="w-full sm:w-36 space-y-1">
+                <div className="flex justify-between font-mono text-[10px] text-slate-400">
+                  <span>0% Clean</span>
+                  <span>80% Regen</span>
+                </div>
+                <div className="h-3 w-full overflow-hidden rounded-full bg-slate-800">
+                  <div
+                    className={`h-full rounded-full transition-all duration-300 ${
+                      soot >= 80 ? 'bg-red-500' : soot >= 60 ? 'bg-amber-400' : 'bg-emerald-400'
+                    }`}
+                    style={{ width: `${Math.min(100, Math.max(4, soot))}%` }}
+                  />
+                </div>
+              </div>
+            </div>
+
+            {/* Stage 4: Tailpipe Out EGT4 */}
+            <div className="flex flex-col justify-between rounded-xl border border-slate-800 bg-slate-950/70 p-3.5 lg:col-span-2">
+              <span className="text-[11px] font-semibold uppercase text-slate-400">
+                4 · Tailpipe
+              </span>
+              <div className="my-2 font-mono text-2xl font-extrabold text-sky-200">
+                {data?.egt4DpfOutF !== null && data?.egt4DpfOutF !== undefined
+                  ? `${data.egt4DpfOutF}°F`
+                  : '—'}
+              </div>
+              <span className="font-mono text-[10px] text-slate-500">DPF Out (EGT 4)</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

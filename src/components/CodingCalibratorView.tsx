@@ -34,7 +34,7 @@ import {
   LightingConfigState,
 } from '../lib/gladiator/modProfiles';
 import { bytesToHex, hexToBytes } from '../lib/transport/isotp';
-import { GarageLaunchpad } from './GarageLaunchpad';
+import { OfflineLinkBanner } from './OfflineLinkBanner';
 
 interface RockerToggleProps {
   label: string;
@@ -158,18 +158,16 @@ export const CodingCalibratorView: React.FC = () => {
     syncLiveBcmConfig();
   }, [syncLiveBcmConfig]);
 
-  if (!session) {
-    return <GarageLaunchpad />;
-  }
-
   const writeUnlocked =
+    Boolean(session) &&
     sgwState === 'bypass_active' &&
     (batteryVolts === null || batteryVolts >= 12.0) &&
     (speedMph === null || speedMph <= 0.5) &&
     !snifferRunning;
 
-  const lockReason =
-    sgwState !== 'bypass_active'
+  const lockReason = !session
+    ? 'Connect dongle + 12+8 cable (or tap "Launch 12+8 Demo" above) to write mods'
+    : sgwState !== 'bypass_active'
       ? simTransport
         ? 'Tap "Sim: Stock OBD" in top bar to switch to 12+8 Cable mode'
         : 'Plug in 12+8 SGW Bypass Cable to apply modifications'
@@ -184,6 +182,7 @@ export const CodingCalibratorView: React.FC = () => {
     snapshots.find((s) => s.txId === bcmEcu.txId);
 
   const handleApplyTireAndAxle = async () => {
+    if (!session) return;
     setBusyCard('tire');
     setFeedback(null);
     try {
@@ -209,6 +208,7 @@ export const CodingCalibratorView: React.FC = () => {
   };
 
   const handleApplyTpms = async () => {
+    if (!session) return;
     setBusyCard('tpms');
     setFeedback(null);
     try {
@@ -228,6 +228,7 @@ export const CodingCalibratorView: React.FC = () => {
   };
 
   const handleApplyLighting = async () => {
+    if (!session) return;
     setBusyCard('lighting');
     setFeedback(null);
     try {
@@ -247,6 +248,7 @@ export const CodingCalibratorView: React.FC = () => {
   };
 
   const handleApplyComfort = async () => {
+    if (!session) return;
     setBusyCard('comfort');
     setFeedback(null);
     try {
@@ -266,7 +268,7 @@ export const CodingCalibratorView: React.FC = () => {
   };
 
   const handleRestoreAllStock = async () => {
-    if (!bcmBaselineSnapshot) return;
+    if (!session || !bcmBaselineSnapshot) return;
     setBusyCard('restore');
     setFeedback(null);
     try {
@@ -302,6 +304,7 @@ export const CodingCalibratorView: React.FC = () => {
 
   // Expert Hex read/write helpers
   const handleExpertRead = async () => {
+    if (!session) return;
     const ecu = findModuleById(expertEcuId);
     const r = await session.requestUds(ecu, `22${expertDid}`, 1600);
     if (r.ok && r.bytes.length >= 4) {
@@ -312,6 +315,7 @@ export const CodingCalibratorView: React.FC = () => {
   };
 
   const handleExpertWrite = async () => {
+    if (!session) return;
     const ecu = findModuleById(expertEcuId);
     setBusyCard('expert');
     try {
@@ -336,6 +340,8 @@ export const CodingCalibratorView: React.FC = () => {
 
   return (
     <div className="space-y-5">
+      <OfflineLinkBanner />
+
       {/* Top Safety & 1-Tap Stock Restore Bar */}
       <div className="uconnect-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 px-5 py-4">
         <div className="flex items-center gap-3">

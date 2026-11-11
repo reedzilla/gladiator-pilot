@@ -182,7 +182,8 @@ export async function writeDidVerified(
   session: ElmSession,
   ecu: EcuEndpoint,
   didHex: string,
-  targetDataHex: string
+  targetDataHex: string,
+  protectTunedPcm = true
 ): Promise<WriteDidOutcome> {
   const cleanDid = didHex.replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   if (cleanDid.length !== 4) {
@@ -191,6 +192,19 @@ export async function writeDidVerified(
   const targetBytes = hexToBytes(targetDataHex);
   if (targetBytes.length === 0) {
     throw new Error('Target payload cannot be empty.');
+  }
+
+  // Stage 2 EcoDiesel ECM Tune-Lock: never send 0x2E writes to PCM (7E0)
+  if (protectTunedPcm && ecu.id === 'PCM') {
+    return {
+      ok: false,
+      didHex: cleanDid,
+      writtenHex: bytesToHex(targetBytes),
+      readBackHex: null,
+      requiresSeedKey27: false,
+      detail:
+        'Stage 2 ECM Tune-Lock Active: PCM (7E0) is strictly Read-Only to protect your Stage 2 EcoDiesel calibration. Tire/Gear/LED/TPMS mods write safely to BCM (620).',
+    };
   }
 
   const run = async (): Promise<WriteDidOutcome> => {

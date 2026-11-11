@@ -14,8 +14,9 @@ import {
   ModuleScanResult,
   scanAllGladiatorModules,
 } from '../lib/gladiator/dtcEngine';
+import { GLADIATOR_MODULES } from '../lib/gladiator/moduleCatalog';
 import { EcuEndpoint } from '../lib/transport/types';
-import { GarageLaunchpad } from './GarageLaunchpad';
+import { OfflineLinkBanner } from './OfflineLinkBanner';
 
 const CATEGORY_LABELS: Record<EcuEndpoint['category'], string> = {
   powertrain: 'Powertrain (3.0L EcoDiesel & ZF 8HP75)',
@@ -36,11 +37,8 @@ export const TopologyDtcView: React.FC = () => {
   const [results, setResults] = useState<ModuleScanResult[]>([]);
   const [clearSummary, setClearSummary] = useState<string | null>(null);
 
-  if (!session) {
-    return <GarageLaunchpad />;
-  }
-
   const handleScanAll = async () => {
+    if (!session) return;
     setScanning(true);
     setClearSummary(null);
     setProgressPct(5);
@@ -61,6 +59,7 @@ export const TopologyDtcView: React.FC = () => {
   };
 
   const handleClearAll = async () => {
+    if (!session) return;
     const onlineTargets = results.filter((r) => r.online).map((r) => r.ecu);
     if (onlineTargets.length === 0) return;
 
@@ -88,6 +87,8 @@ export const TopologyDtcView: React.FC = () => {
 
   return (
     <div className="space-y-5">
+      <OfflineLinkBanner />
+
       {/* Top Action & Summary Hero */}
       <div className="uconnect-card rounded-2xl border border-slate-800/90 p-5 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-4">
@@ -103,11 +104,11 @@ export const TopologyDtcView: React.FC = () => {
           <div className="flex flex-wrap items-center gap-2.5">
             <button
               onClick={handleScanAll}
-              disabled={scanning || clearing || snifferRunning}
+              disabled={!session || scanning || clearing || snifferRunning}
               className="flex min-h-[46px] items-center gap-2 rounded-xl border border-orange-500/60 bg-orange-500/20 px-5 py-2.5 text-xs font-bold text-orange-100 shadow-[0_0_20px_rgba(249,115,22,0.15)] transition hover:bg-orange-500/30 disabled:opacity-40"
             >
               <Radar className={`h-4 w-4 ${scanning ? 'animate-spin' : ''}`} />
-              {scanning ? 'Scanning Truck...' : 'Scan All Modules'}
+              {scanning ? 'Scanning Truck...' : session ? 'Scan All Modules' : 'Connect to Scan'}
             </button>
 
             <button
@@ -201,14 +202,46 @@ export const TopologyDtcView: React.FC = () => {
         </div>
       )}
 
-      {/* Empty State vs Grouped System Cards */}
+      {/* Standby Architecture Map vs Scanned System Cards */}
       {results.length === 0 && !scanning ? (
-        <div className="uconnect-card rounded-2xl border border-slate-800/80 py-14 text-center space-y-2">
-          <Radar className="mx-auto h-8 w-8 text-slate-600" />
-          <div className="text-sm font-bold text-slate-300">Ready to Scan Your Gladiator</div>
-          <p className="text-xs text-slate-500">
-            Tap &ldquo;Scan All Modules&rdquo; above to check fault codes and part numbers across the truck.
-          </p>
+        <div className="space-y-4">
+          {categories.map((cat) => {
+            const mods = GLADIATOR_MODULES.filter(
+              (m) => m.category === cat && (includeCanIhs || m.bus === 'CAN_C')
+            );
+            if (mods.length === 0) return null;
+            return (
+              <div
+                key={cat}
+                className="uconnect-card rounded-2xl border border-slate-800/90 p-4 space-y-3"
+              >
+                <h3 className="text-xs font-bold uppercase tracking-wider text-orange-300">
+                  {CATEGORY_LABELS[cat]}
+                </h3>
+                <div className="grid grid-cols-1 gap-2.5 md:grid-cols-2">
+                  {mods.map((m) => (
+                    <div
+                      key={m.id}
+                      className="flex items-center justify-between gap-2 rounded-xl border border-slate-800/80 bg-slate-950/60 p-3"
+                    >
+                      <div>
+                        <div className="text-sm font-bold text-slate-200">{m.shortName}</div>
+                        <div className="text-[11px] text-slate-500">{m.fullName}</div>
+                        {showTechIds && (
+                          <div className="mt-1 font-mono text-[10px] text-slate-500">
+                            {m.bus} · {m.txId} → {m.rxId}
+                          </div>
+                        )}
+                      </div>
+                      <span className="shrink-0 rounded-full border border-slate-700/80 bg-slate-900 px-2.5 py-0.5 font-mono text-[10px] text-slate-400">
+                        {session ? 'READY' : m.bus === 'CAN_C' ? 'CAN-C' : '12+8 IHS'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
         </div>
       ) : (
         <div className="space-y-4">

@@ -17,6 +17,7 @@ export interface EcoDieselSnapshot {
   rpm: number | null;
   speedMph: number | null;
   boostPsi: number | null;
+  intakeTempF: number | null;
   coolantF: number | null;
   oilTempF: number | null;
   transFluidF: number | null;
@@ -57,6 +58,21 @@ export function decodeMode01BoostPsi(bytes: number[], baroKpa = 101.3): number |
   return Math.round(gaugeKpa * 0.145038 * 10) / 10;
 }
 
+/**
+ * SAE J1979 PID 0x70: 2-Byte Diesel Boost Pressure Control (0.03125 kPa/bit).
+ * Essential for Stage 2 EcoDiesel tunes where boost exceeds 010B's 255 kPa (+22.3 PSI) ceiling.
+ */
+export function decodeMode01HighRangeBoostPsi(bytes: number[], baroKpa = 101.3): number | null {
+  if (bytes.length < 7 || bytes[0] !== 0x41 || bytes[1] !== 0x70) return null;
+  const mask = bytes[2];
+  if ((mask & 0x02) === 0) return null; // Actual Boost Pressure Sensor A not marked valid
+  const raw = (bytes[5] << 8) | bytes[6];
+  if (raw === 0 || raw === 0xffff) return null;
+  const absKpa = raw * 0.03125;
+  const gaugePsi = (absKpa - baroKpa) * 0.145038;
+  return gaugePsi > -14 && gaugePsi < 80 ? Math.round(gaugePsi * 10) / 10 : null;
+}
+
 export function decodeMode01RailPressurePsi(bytes: number[]): number | null {
   if (bytes.length < 4 || bytes[0] !== 0x41 || bytes[1] !== 0x23) return null;
   const kpa = ((bytes[2] << 8) | bytes[3]) * 10;
@@ -90,8 +106,10 @@ export function decodeMode01EgtBank1F(bytes: number[]): {
   const decodeAt = (idx: number): number | null => {
     if (bytes.length < idx + 2) return null;
     const raw = (bytes[idx] << 8) | bytes[idx + 1];
-    if (raw === 0xffff) return null;
-    return cToF(raw * 0.1 - 40);
+    // Filter open-circuit / unplugged sensor sentinels on Stage 2 race pipes
+    if (raw === 0xffff || raw === 0xfffe || raw === 0x0000) return null;
+    const f = cToF(raw * 0.1 - 40);
+    return f > -35 && f < 2050 ? f : null;
   };
   return {
     egt1: mask & 0x01 ? decodeAt(3) : null,
@@ -129,26 +147,32 @@ export function decodeStellantisDpfSootPct(bytes: number[]): number | null {
  */
 export async function pollEcoDieselFastFrame(
   session: ElmSession,
-  includeSlowDids = true
+  includeSlowDids = true,
+  stage2DeleteMode = false
 ): Promise<EcoDieselSnapshot> {
   const pcm = findModuleById('PCM');
   const tcm = findModuleById('TCM');
 
   const askPcm = (hex: string) => session.requestUds(pcm, hex, 1400);
 
-  const [rpmR, spdR, boostR, ectR, oilR, loadR, railR, voltR, egtR, dpfP, regR] = [
-    await askPcm('010C'),
-    await askPcm('010D'),
-    await askPcm('010B'),
-    await askPcm('0105'),
-    await askPcm('015C'),
-    await askPcm('0104'),
-    await askPcm('0123'),
-    await askPcm('0142'),
-    await askPcm('0178'),
-    await askPcm('017A'),
-    await askPcm('018B'),
-  ];
+  const rpmR = await askPcm('010C');
+  const spdR = await askPcm('010D');
+  const boostR = await askPcm('010B');
+  // Query 2-byte Diesel Boost (0170) in Stage 2 mode or whenever 010B nears its 255 kPa ceiling
+  const boost70R =
+    stage2DeleteMode || (boostR.ok && boostR.bytes.length >= 3 && boostR.bytes[2] >= 245)
+      ? await askPcm('0170')
+      : null;
+  const iatR = await askPcm('010F');
+  const ectR = await askPcm('0105');
+  const oilR = await askPcm('015C');
+  const loadR = await askPcm('0104');
+  const railR = await askPcm('0123');
+  const voltR = await askPcm('0142');
+  const egtR = await askPcm('0178');
+  // Skip deleted aftertreatment PIDs in Stage 2 Delete mode for ~30% faster gauge refresh
+  const dpfP = stage2DeleteMode ? null : await askPcm('017A');
+  const regR = stage2DeleteMode ? null : await askPcm('018B');
 
   let batteryVolts = voltR.ok ? decodeMode01Voltage(voltR.bytes) : null;
   if (batteryVolts === null) {
@@ -161,8 +185,10 @@ export async function pollEcoDieselFastFrame(
   let odometerSource: string | null = null;
 
   if (includeSlowDids) {
-    const sootR = await askPcm('221E30');
-    if (sootR.ok) dpfSootPct = decodeStellantisDpfSootPct(sootR.bytes);
+    if (!stage2DeleteMode) {
+      const sootR = await askPcm('221E30');
+      if (sootR.ok) dpfSootPct = decodeStellantisDpfSootPct(sootR.bytes);
+    }
 
     let tftR = await session.requestUds(tcm, '221E1C', 1300);
     if (!tftR.ok) tftR = await askPcm('221E1C');
@@ -192,11 +218,15 @@ export async function pollEcoDieselFastFrame(
     ? decodeMode01EgtBank1F(egtR.bytes)
     : { egt1: null, egt2: null, egt3: null, egt4: null };
 
+  const highBoost = boost70R?.ok ? decodeMode01HighRangeBoostPsi(boost70R.bytes) : null;
+  const stdBoost = boostR.ok ? decodeMode01BoostPsi(boostR.bytes) : null;
+
   return {
     updatedAt: Date.now(),
     rpm: rpmR.ok ? decodeMode01Rpm(rpmR.bytes) : null,
     speedMph: spdR.ok ? decodeMode01SpeedMph(spdR.bytes) : null,
-    boostPsi: boostR.ok ? decodeMode01BoostPsi(boostR.bytes) : null,
+    boostPsi: highBoost ?? stdBoost,
+    intakeTempF: iatR.ok ? decodeMode01TempF(iatR.bytes, 0x0f) : null,
     coolantF: ectR.ok ? decodeMode01TempF(ectR.bytes, 0x05) : null,
     oilTempF: oilR.ok ? decodeMode01TempF(oilR.bytes, 0x5c) : null,
     transFluidF,
@@ -205,8 +235,8 @@ export async function pollEcoDieselFastFrame(
     egt3DpfInF: egts.egt3,
     egt4DpfOutF: egts.egt4,
     dpfSootPct,
-    dpfDiffPsi: dpfP.ok ? decodeMode01DpfDiffPsi(dpfP.bytes) : null,
-    regenActive: regR.ok ? decodeMode01RegenActive(regR.bytes) : null,
+    dpfDiffPsi: dpfP?.ok ? decodeMode01DpfDiffPsi(dpfP.bytes) : null,
+    regenActive: regR?.ok ? decodeMode01RegenActive(regR.bytes) : null,
     railPressurePsi: railR.ok ? decodeMode01RailPressurePsi(railR.bytes) : null,
     engineLoadPct: loadR.ok ? decodeMode01LoadPct(loadR.bytes) : null,
     batteryVolts,

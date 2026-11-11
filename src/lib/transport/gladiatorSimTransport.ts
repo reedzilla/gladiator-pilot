@@ -413,8 +413,29 @@ export class GladiatorSimTransport implements RawTransport {
           const kmh = Math.round(this.vehicleSpeedMph * 1.60934);
           return this.formatIsoTpFrames(resolved.rx, [0x41, 0x0d, kmh & 0xff]);
         }
+        case 0x0f: // Intake Air / Intercooler Charge Temp ~34°C (93°F) -> 34 + 40 = 74
+          return this.formatIsoTpFrames(resolved.rx, [0x41, 0x0f, 74]);
         case 0x10: // MAF g/s * 100 -> 11.4 g/s
           return this.formatIsoTpFrames(resolved.rx, [0x41, 0x10, 0x04, 0x74]);
+        case 0x70: {
+          // SAE J1979 2-Byte Diesel Boost Pressure Control (0.03125 kPa/bit -> supports >22.3 PSI Stage 2 boost!)
+          const absKpa = 122 + Math.sin(t * 0.9) * 24;
+          const raw70 = Math.round(absKpa / 0.03125);
+          return this.formatIsoTpFrames(resolved.rx, [
+            0x41,
+            0x70,
+            0x03, // Sensor A Commanded + Actual supported
+            (raw70 >> 8) & 0xff,
+            raw70 & 0xff,
+            (raw70 >> 8) & 0xff,
+            raw70 & 0xff,
+            0x00,
+            0x00,
+            0x00,
+            0x00,
+            0x01,
+          ]);
+        }
         case 0x23: {
           // Diesel Common Rail Fuel Pressure (10 kPa / bit): ~29,500 kPa (~4,278 PSI at idle) -> 2950 = 0x0B86
           return this.formatIsoTpFrames(resolved.rx, [0x41, 0x23, 0x0b, 0x86]);

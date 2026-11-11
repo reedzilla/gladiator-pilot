@@ -4,7 +4,7 @@ import { useGladiator } from '../context/GladiatorContext';
 import { findModuleById, GLADIATOR_MODULES } from '../lib/gladiator/moduleCatalog';
 import { SavedUdsMacro, vaultDb } from '../lib/storage/vaultDb';
 import { EcuEndpoint } from '../lib/transport/types';
-import { GarageLaunchpad } from './GarageLaunchpad';
+import { OfflineLinkBanner } from './OfflineLinkBanner';
 
 const DEMO_SWITCHES: SavedUdsMacro[] = [
   {
@@ -66,18 +66,15 @@ export const TrailBoxView: React.FC = () => {
   const [newSteps, setNewSteps] = useState('10 03\n2F D1 20 03 01');
   const [newRelease, setNewRelease] = useState('2F D1 20 00');
 
-  if (!session) {
-    return <GarageLaunchpad />;
-  }
-
-  // Show built-in demo switches alongside user switches when running the Simulator
-  const allSwitches: SavedUdsMacro[] = simTransport
+  // Show built-in demo switches when offline or running Simulator so pod is never empty
+  const allSwitches: SavedUdsMacro[] = !session || simTransport
     ? [...DEMO_SWITCHES, ...macros]
     : macros;
 
-  const canTransmit = sgwState === 'bypass_active' && !snifferRunning;
+  const canTransmit = Boolean(session) && sgwState === 'bypass_active' && !snifferRunning;
 
   const handleToggleSwitch = async (sw: SavedUdsMacro) => {
+    if (!session) return;
     const id = sw.id ?? 0;
     const isCurrentlyLatched = latchedIds.has(id);
     const useRelease = isCurrentlyLatched && Boolean(sw.releaseStepsHex?.length);
@@ -170,6 +167,8 @@ export const TrailBoxView: React.FC = () => {
 
   return (
     <div className="space-y-5">
+      <OfflineLinkBanner />
+
       {/* Header Bar */}
       <div className="uconnect-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 px-5 py-4">
         <div className="flex items-center gap-3">

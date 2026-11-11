@@ -1,6 +1,11 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { findModuleById } from '../lib/gladiator/moduleCatalog';
+import { writeDidVerified } from '../lib/gladiator/codingCalibrators';
+import {
+  decodeMode01EgtBank1F,
+  decodeMode01HighRangeBoostPsi,
+} from '../lib/gladiator/ecodieselPids';
 import {
   autoBackupAndApplyDid,
   computeDrivetrainImpact,
@@ -82,5 +87,36 @@ describe('Uconnect V2 Mod Profiles, 8HP75 Drivetrain Impact & Auto-Backup Pipeli
     expect(savedSnaps[0].dids['0131']).toBe('00 10 04 01 00 00');
 
     await session.close();
+  });
+
+  it('hard-locks Stage 2 Tuned PCM (7E0) against accidental 0x2E writes', async () => {
+    const sim = new GladiatorSimTransport({ sgwBypassInstalled: true, replyDelayMs: 0 });
+    const session = new ElmSession(sim);
+    await session.initialize();
+
+    const pcm = findModuleById('PCM');
+    const res = await writeDidVerified(session, pcm, '0130', '0A 9E');
+    expect(res.ok).toBe(false);
+    expect(res.detail).toContain('Stage 2 ECM Tune-Lock Active');
+
+    await session.close();
+  });
+
+  it('decodes Stage 2 high-range 2-byte diesel boost (>22.3 PSI) & filters open-circuit EGT probes', () => {
+    // 322 kPa absolute (~32.0 PSI gauge boost): 322 / 0.03125 = 10304 = 0x2840
+    const boostPsi = decodeMode01HighRangeBoostPsi([
+      0x41, 0x70, 0x03, 0x28, 0x40, 0x28, 0x40, 0x00, 0x00, 0x00, 0x00, 0x01,
+    ]);
+    expect(boostPsi).toBeGreaterThan(31.5);
+    expect(boostPsi).toBeLessThan(32.5);
+
+    // EGT1 connected at 315°C (~599°F -> raw 3550 = 0x0DDE), EGT2/3/4 unplugged on race pipe (0xFFFF, 0x0000)
+    const egts = decodeMode01EgtBank1F([
+      0x41, 0x78, 0x0f, 0x0d, 0xde, 0xff, 0xff, 0x00, 0x00, 0xff, 0xfe,
+    ]);
+    expect(egts.egt1).toBe(599);
+    expect(egts.egt2).toBeNull();
+    expect(egts.egt3).toBeNull();
+    expect(egts.egt4).toBeNull();
   });
 });

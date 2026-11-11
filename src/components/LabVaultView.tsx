@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Archive, Radio } from 'lucide-react';
 import { LiveControlsSnifferView } from './LiveControlsSnifferView';
+import { OfflineLinkBanner } from './OfflineLinkBanner';
 import { VaultDidExplorerView } from './VaultDidExplorerView';
 
 export const LabVaultView: React.FC = () => {
@@ -8,6 +9,7 @@ export const LabVaultView: React.FC = () => {
 
   return (
     <div className="space-y-5">
+      <OfflineLinkBanner />
       {/* Sub-Navigation Pills */}
       <div className="uconnect-card flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-800/90 p-3">
         <div className="flex flex-wrap gap-2">

@@ -46,7 +46,7 @@ export const RawTerminalDrawer: React.FC = () => {
   };
 
   return (
-    <div className="fixed inset-x-0 bottom-0 z-40 border-t border-orange-500/40 bg-[#0b0e13]/98 shadow-2xl backdrop-blur-md">
+    <div className="fixed inset-x-0 bottom-[68px] md:bottom-0 z-40 border-t border-orange-500/40 bg-[#0b0e13]/98 shadow-2xl backdrop-blur-md">
       <div className="mx-auto max-w-7xl p-3 space-y-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <div className="flex items-center gap-2">

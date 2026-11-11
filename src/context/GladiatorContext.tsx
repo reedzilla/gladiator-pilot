@@ -48,6 +48,8 @@ interface GladiatorContextValue {
   setTerminalOpen: (open: boolean) => void;
   nightTrailMode: boolean;
   setNightTrailMode: (on: boolean) => void;
+  stage2DeleteMode: boolean;
+  setStage2DeleteMode: (on: boolean) => void;
 
   snifferRunning: boolean;
   snifferFrames: SniffedCanFrame[];
@@ -77,6 +79,23 @@ export const GladiatorProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [terminalLogs, setTerminalLogs] = useState<TerminalLogEntry[]>([]);
   const [terminalOpen, setTerminalOpen] = useState(false);
   const [nightTrailMode, setNightTrailMode] = useState(false);
+  const [stage2DeleteMode, setStage2DeleteModeState] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('gladiator_stage2_delete');
+      return saved === null ? true : saved === 'true';
+    } catch {
+      return true;
+    }
+  });
+
+  const setStage2DeleteMode = useCallback((on: boolean) => {
+    setStage2DeleteModeState(on);
+    try {
+      localStorage.setItem('gladiator_stage2_delete', String(on));
+    } catch {
+      // Ignore private browsing storage failures
+    }
+  }, []);
 
   const [snifferRunning, setSnifferRunning] = useState(false);
   const [snifferFrames, setSnifferFrames] = useState<SniffedCanFrame[]>([]);
@@ -123,9 +142,13 @@ export const GladiatorProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const volts = await elm.readPin16Voltage();
       if (volts !== null) setBatteryVolts(volts);
 
-      // Read VIN from PCM (7E0 -> 7E8 `22 F1 90`)
+      // Read chassis VIN from BCM first (protects against donor VIN on swapped Stage 2 ECMs), fallback to PCM
+      const bcm = findModuleById('BCM_C');
       const pcm = findModuleById('PCM');
-      const vinResp = await elm.requestUds(pcm, '22F190', 1600);
+      let vinResp = await elm.requestUds(bcm, '22F190', 1400);
+      if (!vinResp.ok || vinResp.bytes.length < 20) {
+        vinResp = await elm.requestUds(pcm, '22F190', 1600);
+      }
       if (vinResp.ok && vinResp.bytes.length >= 20) {
         const ascii = vinResp.bytes
           .slice(3, 20)
@@ -299,6 +322,8 @@ export const GladiatorProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         setTerminalOpen,
         nightTrailMode,
         setNightTrailMode,
+        stage2DeleteMode,
+        setStage2DeleteMode,
         snifferRunning,
         snifferFrames,
         udsTransactions,

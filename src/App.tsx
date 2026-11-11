@@ -70,7 +70,10 @@ const ShellContent: React.FC = () => {
       </main>
 
       {/* Mobile Cab Thumb Dock (Fixed Bottom Navigation) */}
-      <nav className="uconnect-bezel fixed inset-x-0 bottom-0 z-30 border-t border-slate-800/90 px-2 py-1.5 md:hidden">
+      <nav
+        aria-label="Mobile Bottom Navigation"
+        className="uconnect-bezel fixed inset-x-0 bottom-0 z-30 border-t border-slate-800/90 px-2 pt-1.5 pb-[max(0.45rem,env(safe-area-inset-bottom))] md:hidden"
+      >
         <div className="grid grid-cols-5 gap-1">
           {TABS.map((tab) => {
             const Icon = tab.icon;
