@@ -1,12 +1,34 @@
-const CACHE_NAME = 'gladiator-pilot-v3';
-const CORE_ASSETS = ['./', './index.html', './manifest.webmanifest', './gladiator-icon.svg'];
+const CACHE_NAME = 'gladiator-pilot-v4';
+const CORE_ASSETS = [
+  './',
+  './index.html',
+  './manifest.webmanifest',
+  './gladiator-icon.svg',
+  './icon-192.png',
+  './icon-512.png',
+];
 
+// Pre-cache both core shell AND hashed ./assets/*.js & ./assets/*.css bundles on very first install
+// so Airplane Mode / zero-signal trail use works after opening the app just once!
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches
-      .open(CACHE_NAME)
-      .then((cache) => cache.addAll(CORE_ASSETS))
-      .then(() => self.skipWaiting())
+    (async () => {
+      const cache = await caches.open(CACHE_NAME);
+      await cache.addAll(CORE_ASSETS);
+      try {
+        const htmlResp = await fetch('./index.html', { cache: 'no-cache' });
+        const html = await htmlResp.text();
+        const assetMatches = [...html.matchAll(/(?:src|href)="(\.\/assets\/[^"]+)"/g)].map(
+          (m) => m[1]
+        );
+        if (assetMatches.length > 0) {
+          await cache.addAll([...new Set(assetMatches)]);
+        }
+      } catch {
+        // Ignore if offline during install
+      }
+      await self.skipWaiting();
+    })()
   );
 });
 
@@ -21,8 +43,6 @@ self.addEventListener('activate', (event) => {
   );
 });
 
-// Network-first with offline cache fallback so updates arrive immediately when online,
-// while full trail offline mode works with zero cell signal.
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
@@ -37,6 +57,8 @@ self.addEventListener('fetch', (event) => {
         }
         return response;
       })
-      .catch(() => caches.match(event.request).then((cached) => cached || caches.match('./index.html')))
+      .catch(() =>
+        caches.match(event.request).then((cached) => cached || caches.match('./index.html'))
+      )
   );
 });

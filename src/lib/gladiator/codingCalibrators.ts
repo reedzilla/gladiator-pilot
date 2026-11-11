@@ -281,25 +281,32 @@ export async function restoreSnapshotToEcu(
   snapshot: AsBuiltSnapshot,
   skipReadOnlyIdentity = true
 ): Promise<Array<WriteDidOutcome>> {
-  const outcomes: WriteDidOutcome[] = [];
+  const runAll = async (): Promise<Array<WriteDidOutcome>> => {
+    const outcomes: WriteDidOutcome[] = [];
 
-  for (const [didHex, originalHex] of Object.entries(snapshot.dids)) {
-    // Skip standard read-only identity DIDs (F180..F19F) during restore
-    const didNum = parseInt(didHex, 16);
-    if (skipReadOnlyIdentity && didNum >= 0xf180 && didNum <= 0xf19f) continue;
+    for (const [didHex, originalHex] of Object.entries(snapshot.dids)) {
+      // Skip standard read-only identity DIDs (F180..F19F) during restore
+      const didNum = parseInt(didHex, 16);
+      if (skipReadOnlyIdentity && didNum >= 0xf180 && didNum <= 0xf19f) continue;
 
-    // Check current bytes first so we only write DIDs that actually changed
-    const current = await session.requestUds(ecu, `22${didHex}`, 1500);
-    if (current.ok && current.bytes.length >= 4) {
-      const currentHex = bytesToHex(current.bytes.slice(3));
-      if (currentHex === originalHex) {
-        continue; // Already matches factory snapshot!
+      // Check current bytes first so we only write DIDs that actually changed
+      const current = await session.requestUds(ecu, `22${didHex}`, 1500);
+      if (current.ok && current.bytes.length >= 4) {
+        const currentHex = bytesToHex(current.bytes.slice(3));
+        if (currentHex === originalHex) {
+          continue; // Already matches factory snapshot!
+        }
       }
+
+      const res = await writeDidVerified(session, ecu, didHex, originalHex);
+      outcomes.push(res);
     }
 
-    const res = await writeDidVerified(session, ecu, didHex, originalHex);
-    outcomes.push(res);
-  }
+    return outcomes;
+  };
 
-  return outcomes;
+  if (ecu.bus === 'CAN_IHS' || ecu.bits === 29) {
+    return session.withBusSafetyRestore(ecu.bus, ecu.bits, runAll);
+  }
+  return runAll();
 }

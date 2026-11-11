@@ -73,6 +73,7 @@ export const CodingCalibratorView: React.FC = () => {
   const {
     session,
     simTransport,
+    activeBcm,
     sgwState,
     vin,
     batteryVolts,
@@ -124,7 +125,7 @@ export const CodingCalibratorView: React.FC = () => {
   const [expertDid, setExpertDid] = useState('0130');
   const [expertHex, setExpertHex] = useState('');
 
-  const bcmEcu = useMemo(() => findModuleById('BCM_C'), []);
+  const bcmEcu = activeBcm;
 
   const tireCalc = useMemo(
     () => calculateTireCircumferenceFromDiameter(diameterIn, squatFactor),
@@ -140,27 +141,35 @@ export const CodingCalibratorView: React.FC = () => {
     [axleRatio, tireCalc.effectiveDiameterIn]
   );
 
-  // Sync current values from BCM when connected
+  // Sync current values from active BCM (`620->504` or `18DA40F1->18DAF140`) when connected
   const syncLiveBcmConfig = useCallback(async () => {
     if (!session) return;
     try {
-      const r0130 = await session.requestUds(bcmEcu, '220130', 1400);
-      if (r0130.ok && r0130.bytes.length >= 9) {
-        const b = r0130.bytes.slice(3);
-        const rawRatio = ((b[2] << 8) | b[3]) / 100;
-        if (rawRatio >= 3.0 && rawRatio <= 5.5) setAxleRatio(rawRatio);
-        if (b[4] >= 12 && b[4] <= 70) setFrontPsi(b[4]);
-        if (b[5] >= 12 && b[5] <= 70) setRearPsi(b[5]);
-      }
+      const readAll = async () => {
+        const r0130 = await session.requestUds(bcmEcu, '220130', 1400);
+        if (r0130.ok && r0130.bytes.length >= 9) {
+          const b = r0130.bytes.slice(3);
+          const rawRatio = ((b[2] << 8) | b[3]) / 100;
+          if (rawRatio >= 3.0 && rawRatio <= 5.5) setAxleRatio(rawRatio);
+          if (b[4] >= 12 && b[4] <= 70) setFrontPsi(b[4]);
+          if (b[5] >= 12 && b[5] <= 70) setRearPsi(b[5]);
+        }
 
-      const r0131 = await session.requestUds(bcmEcu, '220131', 1400);
-      if (r0131.ok && r0131.bytes.length >= 5) {
-        setLighting(decodeLightingDid0131(bytesToHex(r0131.bytes.slice(3))));
-      }
+        const r0131 = await session.requestUds(bcmEcu, '220131', 1400);
+        if (r0131.ok && r0131.bytes.length >= 5) {
+          setLighting(decodeLightingDid0131(bytesToHex(r0131.bytes.slice(3))));
+        }
 
-      const r0132 = await session.requestUds(bcmEcu, '220132', 1400);
-      if (r0132.ok && r0132.bytes.length >= 7) {
-        setComfort(decodeComfortDid0132(bytesToHex(r0132.bytes.slice(3))));
+        const r0132 = await session.requestUds(bcmEcu, '220132', 1400);
+        if (r0132.ok && r0132.bytes.length >= 7) {
+          setComfort(decodeComfortDid0132(bytesToHex(r0132.bytes.slice(3))));
+        }
+      };
+
+      if (bcmEcu.bus === 'CAN_IHS' || bcmEcu.bits === 29) {
+        await session.withBusSafetyRestore(bcmEcu.bus, bcmEcu.bits, readAll);
+      } else {
+        await readAll();
       }
     } catch {
       /* non-fatal on initial sync */

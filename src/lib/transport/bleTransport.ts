@@ -9,11 +9,17 @@ export interface BleGattProfile {
 
 /**
  * Battle-tested BLE GATT service profiles covering:
+ *  - Vgate vLinker FD+ / MC+ BLE (`18F0` -> `2AF0`/`2AF1`, `E7810A71`, & `49535343`)
  *  - Veepeak OBDCheck BLE (`FFF0`) & BLE+ (`49535343` ISSC)
- *  - Vgate vLinker FD+ / MC+ BLE (`E7810A71` & `FFE0` / `49535343`)
  *  - Nordic UART (`6E400001`) & HM-10 (`FFE0`)
  */
 export const BLE_DONGLE_PROFILES: readonly BleGattProfile[] = [
+  {
+    name: '18F0 UART (Vgate vLinker FD+ / MC+ BLE)',
+    service: '000018f0-0000-1000-8000-00805f9b34fb',
+    tx: '00002af1-0000-1000-8000-00805f9b34fb',
+    rx: '00002af0-0000-1000-8000-00805f9b34fb',
+  },
   {
     name: 'FFF0 UART (Veepeak BLE / Vgate)',
     service: '0000fff0-0000-1000-8000-00805f9b34fb',
@@ -114,7 +120,7 @@ export class BleTransport implements RawTransport {
     if (!matchedProfile || !this.txChar) {
       server.disconnect();
       throw new Error(
-        `Connected to "${device.name || 'device'}", but none of the 5 OBD UART GATT services were found. ` +
+        `Connected to "${device.name || 'device'}", but none of the ${BLE_DONGLE_PROFILES.length} OBD UART GATT services were found. ` +
           'Note: If pairing vLinker FD+ via Bluetooth Classic 3.0 on Windows, choose "USB / BT Serial COM" instead of BLE.'
       );
     }

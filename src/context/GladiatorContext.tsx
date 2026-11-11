@@ -1,5 +1,10 @@
 import React, { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
-import { detectSgwState, findModuleById, SgwProbeResult } from '../lib/gladiator/moduleCatalog';
+import {
+  detectSgwState,
+  findModuleById,
+  resolveActiveBcm,
+  SgwProbeResult,
+} from '../lib/gladiator/moduleCatalog';
 import {
   DecodedUdsTransaction,
   PassiveUdsSnifferEngine,
@@ -13,6 +18,7 @@ import { SerialTransport } from '../lib/transport/serialTransport';
 import {
   AdapterCapabilities,
   BusTarget,
+  EcuEndpoint,
   SgwState,
   TerminalLogEntry,
 } from '../lib/transport/types';
@@ -24,6 +30,7 @@ interface GladiatorContextValue {
   connectionError: string | null;
   capabilities: AdapterCapabilities | null;
   activeBus: BusTarget;
+  activeBcm: EcuEndpoint;
   sgwState: SgwState;
   sgwProbe: SgwProbeResult | null;
   vin: string | null;
@@ -68,6 +75,7 @@ export const GladiatorProvider: React.FC<{ children: React.ReactNode }> = ({ chi
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<AdapterCapabilities | null>(null);
   const [activeBus, setActiveBus] = useState<BusTarget>('CAN_C');
+  const [activeBcm, setActiveBcm] = useState<EcuEndpoint>(() => findModuleById('BCM_C'));
   const [sgwProbe, setSgwProbe] = useState<SgwProbeResult | null>(null);
   const [vin, setVin] = useState<string | null>(null);
   const [batteryVolts, setBatteryVolts] = useState<number | null>(null);
@@ -142,10 +150,16 @@ export const GladiatorProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       const volts = await elm.readPin16Voltage();
       if (volts !== null) setBatteryVolts(volts);
 
-      // Read chassis VIN from BCM first (protects against donor VIN on swapped Stage 2 ECMs), fallback to PCM
-      const bcm = findModuleById('BCM_C');
+      // Auto-resolve whether this truck's Continental BCM answers on 11-bit `620->504` or 29-bit `18DA40F1->18DAF140`
+      const bcm = await resolveActiveBcm(elm);
+      setActiveBcm(bcm);
+
+      // Read chassis VIN from active BCM first (protects against donor VIN on swapped Stage 2 ECMs), fallback to PCM
       const pcm = findModuleById('PCM');
-      let vinResp = await elm.requestUds(bcm, '22F190', 1400);
+      let vinResp =
+        bcm.bits === 29
+          ? await elm.withBusSafetyRestore('CAN_C', 29, () => elm.requestUds(bcm, '22F190', 1400))
+          : await elm.requestUds(bcm, '22F190', 1400);
       if (!vinResp.ok || vinResp.bytes.length < 20) {
         vinResp = await elm.requestUds(pcm, '22F190', 1600);
       }
@@ -159,7 +173,7 @@ export const GladiatorProvider: React.FC<{ children: React.ReactNode }> = ({ chi
       }
 
       // Probe SGW vs 12+8 Bypass
-      const sgw = await detectSgwState(elm);
+      const sgw = await detectSgwState(elm, bcm);
       setSgwProbe(sgw);
     },
     []
@@ -251,15 +265,17 @@ export const GladiatorProvider: React.FC<{ children: React.ReactNode }> = ({ chi
     async (bypassInstalled: boolean) => {
       if (!simTransport || !session) return;
       simTransport.sgwBypassInstalled = bypassInstalled;
-      const sgw = await detectSgwState(session);
+      const sgw = await detectSgwState(session, activeBcm);
       setSgwProbe(sgw);
     },
-    [session, simTransport]
+    [activeBcm, session, simTransport]
   );
 
   const reprobeSgw = useCallback(async () => {
     if (!session) return;
-    const sgw = await detectSgwState(session);
+    const bcm = await resolveActiveBcm(session);
+    setActiveBcm(bcm);
+    const sgw = await detectSgwState(session, bcm);
     setSgwProbe(sgw);
     const v = await session.readPin16Voltage();
     if (v !== null) setBatteryVolts(v);
@@ -301,6 +317,7 @@ export const GladiatorProvider: React.FC<{ children: React.ReactNode }> = ({ chi
         connectionError,
         capabilities,
         activeBus,
+        activeBcm,
         sgwState: sgwProbe?.state ?? 'unknown',
         sgwProbe,
         vin,

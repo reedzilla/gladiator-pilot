@@ -11,6 +11,7 @@ import {
   buildBusSwitchSequence,
   buildPrimaryBusRestoreSequence,
   detectAdapterCapabilities,
+  isCommandRejected,
 } from './vlinkerBusSwitch';
 
 export interface ElmSessionEvents {
@@ -84,12 +85,13 @@ export class ElmSession {
 
     this.emitLog('info', `Opening ${this.transport.deviceName}...`);
 
-    // Reset & clean ELM framing: Echo OFF, Linefeeds OFF, Spaces OFF, Headers ON, Adaptive Timing 1
+    // Reset & clean ELM framing: Echo OFF, Linefeeds OFF, Spaces OFF, Headers ON, Allow Long (>7B TX), Adaptive Timing 1
     await this.sendCommand('ATZ', 2500);
     await this.sendCommand('ATE0', 1000);
     await this.sendCommand('ATL0', 1000);
     await this.sendCommand('ATS0', 1000);
     await this.sendCommand('ATH1', 1000);
+    await this.sendCommand('ATAL', 1000);
     await this.sendCommand('ATCAF1', 1000);
     await this.sendCommand('ATCFC1', 1000);
     await this.sendCommand('ATAT1', 1000);
@@ -227,9 +229,10 @@ export class ElmSession {
       }
     }
 
-    // Re-assert framing after protocol change (ATSP / STP resets header/filter state on some chips)
+    // Re-assert framing + long-frame TX (`ATAL`) after protocol change (ATSP / STP resets state on some chips)
     await this.sendCommand('ATH1', 1000);
     await this.sendCommand('ATS0', 1000);
+    await this.sendCommand('ATAL', 1000);
     await this.sendCommand('ATCAF1', 1000);
     await this.sendCommand('ATCFC1', 1000);
 
@@ -260,6 +263,9 @@ export class ElmSession {
           }
           await this.sendCommand('ATH1', 1000);
           await this.sendCommand('ATS0', 1000);
+          await this.sendCommand('ATAL', 1000);
+          await this.sendCommand('ATCAF1', 1000);
+          await this.sendCommand('ATCFC1', 1000);
           this.activeBus = 'CAN_C';
           this.activeBits = 11;
           this.currentTxId = null;
@@ -292,7 +298,13 @@ export class ElmSession {
       await this.sendCommand(`ATCP ${cp}`, 1000);
       await this.sendCommand(`ATSH ${sh}`, 1000);
       await this.sendCommand(`ATCRA ${cleanRx}`, 1000);
-      await this.sendCommand('ATFCSM 0', 1000);
+      const fcshResp = await this.sendCommand(`ATFCSH ${cleanTx}`, 1000);
+      if (!isCommandRejected(fcshResp)) {
+        await this.sendCommand('ATFCSD 300000', 1000);
+        await this.sendCommand('ATFCSM 1', 1000);
+      } else {
+        await this.sendCommand('ATFCSM 0', 1000);
+      }
     } else {
       const cleanTx = ecu.txId.replace(/\s+/g, '').toUpperCase();
       const cleanRx = ecu.rxId.replace(/\s+/g, '').toUpperCase();
@@ -374,11 +386,13 @@ export class ElmSession {
    * Start passive CAN / UDS Y-Splitter Monitor (`STMA` on STN/vLinker, `ATMA` on ELM327).
    */
   public async startPassiveMonitor(bus: BusTarget, filterCanId?: string): Promise<void> {
-    await this.switchBus(bus, 11);
+    const cleanFilter = filterCanId?.replace(/\s+/g, '').toUpperCase() || '';
+    const bits: AddressingBits = /^[0-9A-F]{8}$/.test(cleanFilter) ? 29 : 11;
+    await this.switchBus(bus, bits);
     await this.sendCommand('ATH1', 1000);
     await this.sendCommand('ATS1', 1000); // Spaces ON makes passive frame parsing unambiguous
-    if (filterCanId && /^[0-9A-Fa-f]{3}$/.test(filterCanId.trim())) {
-      await this.sendCommand(`ATCRA ${filterCanId.trim().toUpperCase()}`, 1000);
+    if (/^[0-9A-F]{3}$/.test(cleanFilter) || /^[0-9A-F]{8}$/.test(cleanFilter)) {
+      await this.sendCommand(`ATCRA ${cleanFilter}`, 1000);
     } else {
       await this.sendCommand('ATCRA', 1000);
     }
@@ -416,6 +430,9 @@ export class ElmSession {
     this.currentRxId = null;
     await this.sendCommand('ATS0', 1000).catch(() => undefined);
     await this.sendCommand('ATCRA', 1000).catch(() => undefined);
+    if (this.activeBus !== 'CAN_C' || this.activeBits !== 11) {
+      await this.switchBus('CAN_C', 11).catch(() => undefined);
+    }
     this.emitLog('info', 'Stopped passive monitor.');
   }
 }

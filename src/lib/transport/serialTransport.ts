@@ -44,8 +44,10 @@ export class SerialTransport implements RawTransport {
         if (!port.writable) throw new Error('Serial port is not writable.');
         this.writer = port.writable.getWriter();
 
-        const probeOk = await this.probePrompt(900);
+        const probeOk = await this.probePrompt(950);
         if (probeOk) {
+          // Brief settle window so any trailing CR/LF after '>' never leaks into ATZ
+          await new Promise((r) => setTimeout(r, 35));
           connectedBaud = baudRate;
           break;
         }
@@ -79,7 +81,8 @@ export class SerialTransport implements RawTransport {
 
       const unsub = this.onData((chunk) => {
         buf += chunk;
-        if (buf.includes('>') || /ELM|STN|vLinker|OK/i.test(buf)) {
+        // Wait for the full '>' prompt terminator so a late '>' never desyncs ElmSession's FIFO queue
+        if (buf.includes('>') && /ELM|STN|vLinker|OK|\?/i.test(buf)) {
           clearTimeout(timer);
           unsub();
           resolve(true);

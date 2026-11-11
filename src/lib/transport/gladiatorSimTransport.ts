@@ -10,6 +10,8 @@ export interface SimulatorOptions {
   batteryVolts?: number;
   /** Artificial reply latency in ms (default 4ms; pass 0 in tests for microtask speed) */
   replyDelayMs?: number;
+  /** Emulate 2020-2023 Continental BCMs that only answer UDS on 29-bit `18DA40F1 -> 18DAF140` (silent on `620`) */
+  bcm29OnlyMode?: boolean;
 }
 
 /**
@@ -27,6 +29,7 @@ export class GladiatorSimTransport implements RawTransport {
   private activeStpPreset = '33'; // 33=CAN_C 11b, 34=CAN_C 29b, 53=CAN_IHS 11b, 54=CAN_IHS 29b
   private spacesOn = false;
   private headersOn = true;
+  private allowLongFrames = false;
   private currentTx = '7DF';
   private currentCp = '18';
   private currentCra: string | null = null;
@@ -35,6 +38,7 @@ export class GladiatorSimTransport implements RawTransport {
   public sgwBypassInstalled: boolean;
   public vehicleSpeedMph: number;
   public batteryVolts: number;
+  public bcm29OnlyMode: boolean;
   private replyDelayMs: number;
 
   // Persistent simulated BCM / ECU DID store (allows real 0x22 scan, 0x2E write, diff, and Factory Restore testing)
@@ -48,6 +52,7 @@ export class GladiatorSimTransport implements RawTransport {
     this.sgwBypassInstalled = opts.sgwBypassInstalled;
     this.vehicleSpeedMph = opts.vehicleSpeedMph ?? 0;
     this.batteryVolts = opts.batteryVolts ?? 12.6;
+    this.bcm29OnlyMode = opts.bcm29OnlyMode ?? false;
     this.replyDelayMs = opts.replyDelayMs ?? 4;
     this.seedDefaultState();
   }
@@ -154,6 +159,7 @@ export class GladiatorSimTransport implements RawTransport {
     if (cmd === 'ATZ') {
       this.spacesOn = false;
       this.headersOn = true;
+      this.allowLongFrames = false;
       this.activeStpPreset = '33';
       this.emitReply(['ELM327 v2.3']);
       return;
@@ -206,6 +212,7 @@ export class GladiatorSimTransport implements RawTransport {
       const p = cmd.slice(4).trim();
       if (['33', '34', '53', '54'].includes(p)) {
         this.activeStpPreset = p;
+        this.allowLongFrames = false; // Real STN/ELM resets ATAL on protocol change unless re-asserted!
         this.emitReply(['OK']);
       } else {
         this.emitReply(['?']);
@@ -245,6 +252,16 @@ export class GladiatorSimTransport implements RawTransport {
       this.emitReply(['OK']);
       return;
     }
+    if (cmd === 'ATAL') {
+      this.allowLongFrames = true;
+      this.emitReply(['OK']);
+      return;
+    }
+    if (cmd === 'ATNL') {
+      this.allowLongFrames = false;
+      this.emitReply(['OK']);
+      return;
+    }
     if (
       cmd === 'ATE0' ||
       cmd === 'ATL0' ||
@@ -255,6 +272,7 @@ export class GladiatorSimTransport implements RawTransport {
       cmd.startsWith('ATSP') ||
       cmd.startsWith('ATFCS')
     ) {
+      if (cmd.startsWith('ATSP')) this.allowLongFrames = false;
       this.emitReply(['OK']);
       return;
     }
@@ -305,6 +323,11 @@ export class GladiatorSimTransport implements RawTransport {
       this.emitReply(['?']);
       return;
     }
+    // Emulate physical ELM327 / STN / vLinker FD+ >7-byte TX rejection when ATAL was not sent!
+    if (reqBytes.length > 7 && !this.allowLongFrames) {
+      this.emitReply(['DATA ERROR']);
+      return;
+    }
 
     const frames = this.simulateVehicleResponse(reqBytes);
     if (!frames || frames.length === 0) {
@@ -350,7 +373,7 @@ export class GladiatorSimTransport implements RawTransport {
       '7E0': '7E8', // PCM (3.0L EcoDiesel)
       '7E1': '7E9', // TCM (ZF 8HP75)
       '747': '4C7', // ABS / ESC (wire-verified on 2021 JT 3.0L EcoDiesel!)
-      '620': '504', // BCM (CAN-C interface)
+      ...(this.bcm29OnlyMode ? {} : { '620': '504' }), // BCM (CAN-C 11-bit interface)
       '744': '4C4', // DTCM (Transfer Case)
       '75A': '4DA', // EPS (Electric Power Steering)
       '762': '4E2', // SCCM (Steering Column Control Module)

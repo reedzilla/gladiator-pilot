@@ -106,7 +106,7 @@ interface FourCornerPsi {
 }
 
 export const TrailBoxView: React.FC = () => {
-  const { session, simTransport, sgwState, macros, refreshVault, snifferRunning } =
+  const { session, simTransport, activeBcm, sgwState, macros, refreshVault, snifferRunning } =
     useGladiator();
 
   const [latchedIds, setLatchedIds] = useState<Set<number>>(new Set());
@@ -126,8 +126,12 @@ export const TrailBoxView: React.FC = () => {
 
   const sampleTirePressures = async () => {
     if (!session || snifferRunning) return;
-    const bcm = findModuleById('BCM_C');
-    const r = await session.requestUds(bcm, '22D112', 1400);
+    const r =
+      activeBcm.bits === 29 || activeBcm.bus === 'CAN_IHS'
+        ? await session.withBusSafetyRestore(activeBcm.bus, activeBcm.bits, () =>
+            session.requestUds(activeBcm, '22D112', 1400)
+          )
+        : await session.requestUds(activeBcm, '22D112', 1400);
     if (r.ok && r.bytes.length >= 7 && r.bytes[0] === 0x62) {
       const next: FourCornerPsi = {
         fl: r.bytes[3],
@@ -184,15 +188,16 @@ export const TrailBoxView: React.FC = () => {
     const useRelease = isCurrentlyLatched && Boolean(sw.releaseStepsHex?.length);
     const steps = useRelease ? sw.releaseStepsHex! : sw.stepsHex;
 
+    const useResolvedBcm = (sw.id ?? 0) < 0 && sw.txId === '620';
     const endpoint: EcuEndpoint = {
       id: `SW_${id}`,
       shortName: sw.name,
       fullName: sw.name,
-      bus: sw.bus,
-      bits: sw.bits,
-      txId: sw.txId,
-      rxId: sw.rxId,
-      scheme: sw.scheme,
+      bus: useResolvedBcm ? activeBcm.bus : sw.bus,
+      bits: useResolvedBcm ? activeBcm.bits : sw.bits,
+      txId: useResolvedBcm ? activeBcm.txId : sw.txId,
+      rxId: useResolvedBcm ? activeBcm.rxId : sw.rxId,
+      scheme: useResolvedBcm ? activeBcm.scheme : sw.scheme,
       category: 'body',
       provenance: 'jl_jt_architecture',
     };
@@ -215,8 +220,8 @@ export const TrailBoxView: React.FC = () => {
       };
 
       const outcome =
-        sw.bus === 'CAN_IHS' || sw.bits === 29
-          ? await session.withBusSafetyRestore(sw.bus, sw.bits, exec)
+        endpoint.bus === 'CAN_IHS' || endpoint.bits === 29
+          ? await session.withBusSafetyRestore(endpoint.bus, endpoint.bits, exec)
           : await exec();
 
       if (outcome.allOk) {

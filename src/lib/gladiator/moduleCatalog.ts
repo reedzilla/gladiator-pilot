@@ -245,30 +245,71 @@ export interface SgwProbeResult {
 }
 
 /**
+ * Automatically resolve whether the truck's Continental PowerNet BCM answers UDS diagnostics on
+ * 11-bit `BCM_C` (`620 -> 504`) or 29-bit `BCM_29` (`18DA40F1 -> 18DAF140`).
+ * Many 2020-2023 Jeep JT BCMs answer UDS coding on `18DA40F1 -> 18DAF140` while keeping `620` silent.
+ */
+export async function resolveActiveBcm(session: ElmSession): Promise<EcuEndpoint> {
+  const bcm11 = findModuleById('BCM_C');
+  const bcm29 = findModuleById('BCM_29');
+
+  const ping11 = await session.requestUds(bcm11, '3E00', 1100);
+  if (ping11.ok || ping11.isNegativeResponse) {
+    return bcm11;
+  }
+
+  try {
+    const ping29 = await session.withBusSafetyRestore('CAN_C', 29, () =>
+      session.requestUds(bcm29, '3E00', 1300)
+    );
+    if (ping29.ok || ping29.isNegativeResponse) {
+      return bcm29;
+    }
+  } catch {
+    /* Adapter may not support 29-bit mode; keep 11-bit BCM_C default */
+  }
+
+  return bcm11;
+}
+
+/**
  * Non-destructive SGW vs 12+8 Bypass detector:
  *  1. Queries SGW `47E -> 47F` with `3E 00` (TesterPresent). If `47F` answers, the factory SGW is physically plugged in!
- *  2. Tests `10 03` (Extended Diagnostic Session) on BCM (`620 -> 504`) or ABS (`747 -> 4C7`).
+ *  2. Tests `10 03` (Extended Diagnostic Session) on active BCM (`620 -> 504` or `18DA40F1 -> 18DAF140`) or ABS (`747 -> 4C7`).
  *     - Behind the stock SGW, `10 03` is blocked (`7F 10 33` or `NO DATA`).
  *     - Behind a 12+8 SGW bypass cable, `47E` is silent (unplugged) and `10 03` returns `50 03 ...`!
  */
-export async function detectSgwState(session: ElmSession): Promise<SgwProbeResult> {
+export async function detectSgwState(
+  session: ElmSession,
+  preferredBcm?: EcuEndpoint
+): Promise<SgwProbeResult> {
   const sgwEcu = findModuleById('SGW');
-  const bcmEcu = findModuleById('BCM_C');
+  const bcmEcu = preferredBcm ?? findModuleById('BCM_C');
   const absEcu = findModuleById('ABS');
 
   const sgwPing = await session.requestUds(sgwEcu, '3E00', 1200);
   const sgwAnswered47E = sgwPing.ok;
 
-  // Test Extended Session on BCM first, fallback to ABS (747->4C7 wire-verified on 2021 JT 3.0D)
-  let extResp = await session.requestUds(bcmEcu, '1003', 1500);
+  const probeEcuExtended = async (ecu: EcuEndpoint) => {
+    const fn = async () => {
+      const r = await session.requestUds(ecu, '1003', 1500);
+      if (r.ok) {
+        await session.requestUds(ecu, '1001', 1000).catch(() => undefined);
+      }
+      return r;
+    };
+    return ecu.bits === 29 || ecu.bus === 'CAN_IHS'
+      ? session.withBusSafetyRestore(ecu.bus, ecu.bits, fn)
+      : fn();
+  };
+
+  // Test Extended Session on active BCM first, fallback to ABS (747->4C7 wire-verified on 2021 JT 3.0D)
+  let extResp = await probeEcuExtended(bcmEcu);
   if (!extResp.ok && !extResp.isNegativeResponse) {
-    extResp = await session.requestUds(absEcu, '1003', 1500);
+    extResp = await probeEcuExtended(absEcu);
   }
 
-  // Return module to Default Session (`10 01`) cleanly if `10 03` opened
   if (extResp.ok) {
-    const target = extResp.responderId === '4C7' ? absEcu : bcmEcu;
-    await session.requestUds(target, '1001', 1000).catch(() => undefined);
     return {
       state: 'bypass_active',
       sgwAnswered47E,

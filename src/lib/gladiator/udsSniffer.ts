@@ -70,6 +70,12 @@ function lookupModuleByCanId(canId: string): { ecu?: EcuEndpoint; direction: 're
   const byRx = GLADIATOR_MODULES.find((m) => m.rxId.toUpperCase() === canId);
   if (byRx) return { ecu: byRx, direction: 'response' };
   if (canId === '7DF') return { direction: 'request' };
+  // ISO 15765-4 29-bit physical addressing (`18DA<TA><SA>`, tester = F1..FD):
+  if (canId.length === 8 && /^18DA/i.test(canId)) {
+    const ta = canId.slice(4, 6).toUpperCase();
+    if (/^F[1-9A-D]$/.test(ta)) return { direction: 'response' };
+    return { direction: 'request' };
+  }
   // Standard 7E0..7E7 vs 7E8..7EF heuristic
   const n = parseInt(canId, 16);
   if (n >= 0x7e8 && n <= 0x7ef) return { direction: 'response' };
@@ -338,6 +344,12 @@ export function buildMacroFromSniffedTransaction(
     releaseStepsHex = [bytesToHex([0x2f, tx.payloadBytes[1], tx.payloadBytes[2], 0x00])];
   }
 
+  const is29Bit = tx.canId.length === 8;
+  const inferred29Rx =
+    is29Bit && /^18DA[0-9A-F]{4}$/i.test(tx.canId)
+      ? `18DA${tx.canId.slice(6, 8)}${tx.canId.slice(4, 6)}`.toUpperCase()
+      : '18DAF140';
+
   return {
     createdAt: Date.now(),
     name:
@@ -345,10 +357,10 @@ export function buildMacroFromSniffedTransaction(
       `${ecu?.shortName || tx.canId}: ${tx.summary.slice(0, 44)}`,
     category,
     bus: tx.bus,
-    bits: tx.canId.length === 8 ? 29 : 11,
+    bits: is29Bit ? 29 : 11,
     txId: ecu?.txId || tx.canId,
-    rxId: ecu?.rxId || '504',
-    scheme: ecu?.scheme || 'fca_asymmetric',
+    rxId: ecu?.rxId || (is29Bit ? inferred29Rx : '504'),
+    scheme: ecu?.scheme || (is29Bit ? 'iso_29bit' : 'fca_asymmetric'),
     stepsHex: ['10 03', tx.payloadHex],
     releaseStepsHex,
     provenance: 'sniffer_captured',
